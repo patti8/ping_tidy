@@ -1,4 +1,4 @@
-# Habbit Tracker Tools
+# Rabbit Tracker Tools
 
 A premium Habit Tracker built with Next.js, Google OAuth, and Google Sheets integration.
 
@@ -51,5 +51,5 @@ npm run dev
 
 ## How it works
 - When you log in, the app requests permission to manage your spreadsheets.
-- Every time you toggle a habit, it appends a row to a sheet named "Habbit Tracker Data" in your Google Drive.
+- Every time you toggle a habit, it appends a row to a sheet named "Rabbit Tracker Data" in your Google Drive.
 - If the sheet doesn't exist, it creates one for you.
