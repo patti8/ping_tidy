@@ -27,7 +27,8 @@ import {
     ChevronUp,
     FileText,
     Edit3,
-    X
+    X,
+    Copy
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -66,6 +67,13 @@ export default function HabitTracker() {
     const [expandedDate, setExpandedDate] = useState<string | null>(null);
     const [selectedDate, setSelectedDate] = useState<string | null>(null);
     const [calendarMonth, setCalendarMonth] = useState(new Date());
+    const [confirmation, setConfirmation] = useState<{
+        isOpen: boolean;
+        title: string;
+        message: string;
+        details?: string;
+        onConfirm: () => void;
+    } | null>(null);
 
     const t = {
         id: {
@@ -100,6 +108,11 @@ export default function HabitTracker() {
             tulis_catatan: 'Tulis evaluasi atau catatan hari ini...',
             signup: 'Daftar dengan Google',
             tidak_ada_catatan: 'Tidak ada catatan untuk hari ini.',
+            konfirmasi_salin: 'Konfirmasi Salin',
+            pesan_salin_banyak: 'Salin semua tugas dari tanggal ini ke daftar tugas hari ini?',
+            konfirmasi_salin_satu: 'Salin Tugas',
+            pesan_salin_satu: 'Salin tugas ini ke hari ini?',
+            ya: 'Ya, Salin',
         },
         en: {
             halo: 'Hello,',
@@ -133,6 +146,11 @@ export default function HabitTracker() {
             tulis_catatan: 'Write today\'s evaluation or notes...',
             signup: 'Sign up with Google',
             tidak_ada_catatan: 'No notes for today.',
+            konfirmasi_salin: 'Confirm Copy',
+            pesan_salin_banyak: 'Copy all tasks from this date to today\'s list?',
+            konfirmasi_salin_satu: 'Copy Task',
+            pesan_salin_satu: 'Copy this task to today?',
+            ya: 'Yes, Copy',
         }
     }[language];
 
@@ -343,6 +361,32 @@ export default function HabitTracker() {
         await saveToFirebase(habits, completions, newNotes);
     };
 
+    const copyTaskToToday = async (text: string) => {
+        const habit = { id: Date.now().toString(), text: text, createdAt: today };
+        const updatedHabits = [...habits, habit];
+        setHabits(updatedHabits);
+        await saveToFirebase(updatedHabits, completions, notes);
+    };
+
+    const copyAllTasksToToday = async (date: string) => {
+        const sourceHabits = habits.filter(h => h.createdAt === date);
+        if (sourceHabits.length === 0) return;
+
+        const newHabits = sourceHabits.map((h, i) => ({
+            id: `${Date.now()}-${i}-${Math.random().toString(36).substr(2, 9)}`,
+            text: h.text,
+            createdAt: today
+        }));
+
+        const updatedHabits = [...habits, ...newHabits];
+        setHabits(updatedHabits);
+        await saveToFirebase(updatedHabits, completions, notes);
+
+        // Show feedback or switch tab? 
+        // Simple feedback via alert or toast would be nice but for now just the action
+        setActiveTab('today');
+    };
+
     const getProgress = (date: string) => {
         const dateHabits = habits.filter(h => h.createdAt === date);
         if (dateHabits.length === 0) return 0;
@@ -469,14 +513,14 @@ export default function HabitTracker() {
     return (
         <div className="min-h-screen bg-background transition-colors duration-500 pb-40">
             <div className="max-w-2xl mx-auto px-6 pt-10 relative">
-                <header className="flex justify-between items-center mb-8 md:mb-12">
+                <header className="flex justify-between items-center mb-6 md:mb-12">
                     <div className="flex items-center gap-4 md:gap-5">
-                        <div className="relative">
+                        <div className="relative hidden md:block">
                             {user.photoURL ? (
-                                <img src={user.photoURL} alt="User" className="w-12 h-12 md:w-14 md:h-14 rounded-3xl shadow-xl border-4 border-white dark:border-slate-800 object-cover" />
+                                <img src={user.photoURL} alt="User" className="w-10 h-10 md:w-14 md:h-14 rounded-3xl shadow-xl border-4 border-white dark:border-slate-800 object-cover" />
                             ) : (
-                                <div className="w-12 h-12 md:w-14 md:h-14 bg-blue-100 dark:bg-slate-800 rounded-3xl flex items-center justify-center">
-                                    <UserIcon className="text-blue-600 w-6 h-6 md:w-7 md:h-7" />
+                                <div className="w-10 h-10 md:w-14 md:h-14 bg-blue-100 dark:bg-slate-800 rounded-3xl flex items-center justify-center">
+                                    <UserIcon className="text-blue-600 w-5 h-5 md:w-7 md:h-7" />
                                 </div>
                             )}
                             {(isSyncing || dataLoading) && (
@@ -487,7 +531,7 @@ export default function HabitTracker() {
                             )}
                         </div>
                         <div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 hidden md:flex">
                                 <h2 className="text-[10px] md:text-sm font-bold text-slate-500 uppercase tracking-[0.2em]">Rabbit Hub</h2>
                                 {dataLoading ? (
                                     <span className="text-[8px] md:text-[10px] text-blue-500 font-bold uppercase animate-pulse">{t.syncing}</span>
@@ -501,7 +545,7 @@ export default function HabitTracker() {
                                     </span>
                                 )}
                             </div>
-                            <h1 className="text-xl md:text-2xl font-black text-slate-900 dark:text-white leading-tight truncate max-w-[180px] md:max-w-none">{user.displayName}</h1>
+                            <h1 className="text-lg md:text-2xl font-black text-slate-900 dark:text-white leading-tight truncate max-w-[180px] md:max-w-none">{user.displayName}</h1>
                             <div className="flex flex-col items-start gap-0.5 md:flex-row md:items-center md:gap-2 mt-0.5">
                                 <p className="text-[10px] md:text-xs font-medium text-slate-500 dark:text-slate-400 truncate max-w-[140px] md:max-w-none">{user.email}</p>
                                 {lastSynced && !error && (
@@ -512,16 +556,16 @@ export default function HabitTracker() {
                     </div>
                     <div className="flex items-center gap-2 md:gap-3">
                         <button onClick={toggleLanguage}
-                            className="p-3 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-blue-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl group flex items-center gap-2">
+                            className="p-2 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-blue-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl group flex items-center gap-2">
                             <Languages className="w-5 h-5 md:w-6 md:h-6" />
                             <span className="text-[10px] font-black group-hover:block hidden">{language.toUpperCase()}</span>
                         </button>
                         <button onClick={() => setIsDarkMode(!isDarkMode)}
-                            className="p-3 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-blue-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl">
+                            className="p-2 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-blue-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl">
                             {isDarkMode ? <Sun className="w-5 h-5 md:w-6 md:h-6" /> : <Moon className="w-5 h-5 md:w-6 md:h-6" />}
                         </button>
                         <button onClick={handleLogout}
-                            className="p-3 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-red-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl">
+                            className="p-2 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-red-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl">
                             <LogOut className="w-5 h-5 md:w-6 md:h-6" />
                         </button>
                     </div>
@@ -783,8 +827,32 @@ export default function HabitTracker() {
                                                             {isExpanded ? <ChevronUp className={cn("w-4 h-4 md:w-5 md:h-5", chevronColor)} /> : <ChevronDown className="w-4 h-4 md:w-5 md:h-5 text-slate-300" />}
                                                         </div>
                                                     </div>
+
+                                                    {!isToday && habits.filter(h => h.createdAt === dateKey).length > 0 && (
+                                                        <button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setConfirmation({
+                                                                    isOpen: true,
+                                                                    title: t.konfirmasi_salin,
+                                                                    message: t.pesan_salin_banyak,
+                                                                    details: `${d.toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { day: 'numeric', month: 'long', year: 'numeric' })} • ${habits.filter(h => h.createdAt === dateKey).length} Tasks`,
+                                                                    onConfirm: () => copyAllTasksToToday(dateKey)
+                                                                });
+                                                            }}
+                                                            className="p-3 rounded-full bg-slate-100 dark:bg-slate-700/50 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all active:scale-95"
+                                                            title="Salin semua ke Hari Ini"
+                                                        >
+                                                            <Copy className="w-4 h-4 md:w-5 md:h-5" />
+                                                        </button>
+                                                    )}
+
                                                     <div className="text-right">
-                                                        <div className={cn("text-xl md:text-2xl font-black", progress > 50 ? "text-blue-600" : "text-orange-500")}>{progress}%</div>
+                                                        <div className={cn("text-xl md:text-2xl font-black flex items-center gap-2 justify-end", progress > 50 ? "text-blue-600" : "text-orange-500")}>
+                                                            <span>{progress}%</span>
+                                                            <span className="text-sm md:text-base text-slate-300 dark:text-slate-600">/</span>
+                                                            <span className="text-sm md:text-base text-slate-400 dark:text-slate-500">{habits.filter(h => h.createdAt === dateKey).length}</span>
+                                                        </div>
                                                         <div className="text-[8px] md:text-[10px] font-bold text-slate-500 dark:text-slate-500 uppercase tracking-widest">{t.selesai}</div>
                                                     </div>
                                                 </div>
@@ -810,22 +878,35 @@ export default function HabitTracker() {
                                                                 habits.filter(h => h.createdAt === dateKey).map(habit => {
                                                                     const habitDone = doneIds.includes(habit.id);
                                                                     return (
-                                                                        <div key={habit.id} className="flex items-center gap-3 p-2.5 md:p-3 rounded-2xl bg-white dark:bg-slate-800 border border-slate-100/50 dark:border-slate-700/50 shadow-sm">
+                                                                        <div key={habit.id} className="group flex items-center gap-3 p-2.5 md:p-3 rounded-2xl bg-white dark:bg-slate-800 border border-slate-100/50 dark:border-slate-700/50 shadow-sm relative pr-12 transition-all hover:shadow-md">
                                                                             {habitDone ? (
-                                                                                <div className="bg-green-100 dark:bg-green-900/20 p-1 rounded-lg">
+                                                                                <div className="bg-green-100 dark:bg-green-900/20 p-1 rounded-lg shrink-0">
                                                                                     <CheckCircle2 className="w-3.5 h-3.5 md:w-4 md:h-4 text-green-600" />
                                                                                 </div>
                                                                             ) : (
-                                                                                <div className="bg-slate-100 dark:bg-slate-900/50 p-1 rounded-lg">
+                                                                                <div className="bg-slate-100 dark:bg-slate-900/50 p-1 rounded-lg shrink-0">
                                                                                     <Circle className="w-3.5 h-3.5 md:w-4 md:h-4 text-slate-300" />
                                                                                 </div>
                                                                             )}
                                                                             <span className={cn(
-                                                                                "text-xs md:text-sm font-bold",
+                                                                                "text-xs md:text-sm font-bold truncate w-full",
                                                                                 habitDone ? "text-slate-900 dark:text-white" : "text-slate-400 dark:text-slate-600"
                                                                             )}>
                                                                                 {habit.text}
                                                                             </span>
+                                                                            <button
+                                                                                onClick={() => setConfirmation({
+                                                                                    isOpen: true,
+                                                                                    title: t.konfirmasi_salin_satu,
+                                                                                    message: t.pesan_salin_satu,
+                                                                                    details: `${d.toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { day: 'numeric', month: 'long', year: 'numeric' })} • 1 Task`,
+                                                                                    onConfirm: () => copyTaskToToday(habit.text)
+                                                                                })}
+                                                                                className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 p-2 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all rounded-xl"
+                                                                                title="Salin ke Hari Ini"
+                                                                            >
+                                                                                <Copy className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                                                                            </button>
                                                                         </div>
                                                                     );
                                                                 })
@@ -898,21 +979,64 @@ export default function HabitTracker() {
                     )}
                 </main>
 
-                <nav className="fixed bottom-6 md:bottom-12 left-1/2 -translate-x-1/2 w-full max-w-sm px-6 z-50">
-                    <div className="bg-slate-900/90 dark:bg-slate-800/90 backdrop-blur-3xl shadow-2xl rounded-[2.5rem] md:rounded-[3rem] p-3 md:p-4 flex items-center justify-between border border-white/10">
+                <nav className="fixed bottom-5 md:bottom-12 left-1/2 -translate-x-1/2 w-full max-w-sm px-6 z-50">
+                    <div className="bg-slate-900/90 dark:bg-slate-800/90 backdrop-blur-3xl shadow-2xl rounded-[2.5rem] md:rounded-[3rem] p-2 md:p-4 grid grid-cols-2 gap-2 border border-white/10">
                         <button onClick={() => setActiveTab('today')}
-                            className={cn("flex items-center justify-center gap-2 md:gap-3 py-4 md:py-5 px-6 md:px-10 rounded-[2rem] md:rounded-[2.5rem] transition-all duration-500 font-black text-xs md:text-sm", activeTab === 'today' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/20' : 'text-slate-500 hover:text-white')}>
+                            className={cn("w-full flex items-center justify-center gap-2 md:gap-3 py-3 px-5 md:py-5 md:px-10 rounded-[2rem] md:rounded-[2.5rem] transition-all duration-500 font-black text-xs md:text-sm", activeTab === 'today' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/20' : 'text-slate-500 hover:text-white')}>
                             <LayoutGrid className="w-5 h-5 md:w-6 md:h-6" />
                             {activeTab === 'today' && <span>{t.target.toUpperCase()}</span>}
                         </button>
                         <button onClick={() => setActiveTab('history')}
-                            className={cn("flex items-center justify-center gap-2 md:gap-3 py-4 md:py-5 px-6 md:px-10 rounded-[2rem] md:rounded-[2.5rem] transition-all duration-500 font-black text-xs md:text-sm", activeTab === 'history' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/20' : 'text-slate-500 hover:text-white')}>
+                            className={cn("w-full flex items-center justify-center gap-2 md:gap-3 py-3 px-5 md:py-5 md:px-10 rounded-[2rem] md:rounded-[2.5rem] transition-all duration-500 font-black text-xs md:text-sm", activeTab === 'history' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/20' : 'text-slate-500 hover:text-white')}>
                             <History className="w-5 h-5 md:w-6 md:h-6" />
                             {activeTab === 'history' && <span>{t.riwayat.toUpperCase()}</span>}
                         </button>
                     </div>
                 </nav>
             </div>
+
+            <AnimatePresence>
+                {confirmation && confirmation.isOpen && (
+                    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            onClick={() => setConfirmation(null)}
+                            className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+                        />
+                        <motion.div
+                            initial={{ scale: 0.95, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.95, opacity: 0 }}
+                            className="bg-white dark:bg-slate-800 rounded-[2rem] p-6 w-full max-w-sm shadow-2xl relative z-10 border border-slate-100 dark:border-slate-700"
+                        >
+                            <h3 className="text-lg font-black text-slate-900 dark:text-white mb-2">{confirmation.title}</h3>
+                            <p className="text-slate-500 dark:text-slate-400 text-sm mb-2 leading-relaxed">{confirmation.message}</p>
+                            {confirmation.details && (
+                                <div className="bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl mb-6 text-xs font-bold text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-800 flex items-center gap-2 justify-center">
+                                    <Calendar className="w-3.5 h-3.5" />
+                                    {confirmation.details}
+                                </div>
+                            )}
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setConfirmation(null)}
+                                    className="flex-1 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                >
+                                    {t.batal}
+                                </button>
+                                <button
+                                    onClick={() => { confirmation.onConfirm(); setConfirmation(null); }}
+                                    className="flex-1 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-500/30 transition-all"
+                                >
+                                    {t.ya}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
         </div>
     );
 }
