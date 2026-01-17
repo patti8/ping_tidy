@@ -28,7 +28,8 @@ import {
     FileText,
     Edit3,
     X,
-    Copy
+    Copy,
+    Square
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -72,8 +73,10 @@ export default function HabitTracker() {
         title: string;
         message: string;
         details?: string;
-        onConfirm: () => void;
+        tasks?: Habit[];
+        onConfirm: (selectedIds?: string[]) => void;
     } | null>(null);
+    const [selectedTasksToCopy, setSelectedTasksToCopy] = useState<string[]>([]);
 
     const t = {
         id: {
@@ -109,10 +112,11 @@ export default function HabitTracker() {
             signup: 'Daftar dengan Google',
             tidak_ada_catatan: 'Tidak ada catatan untuk hari ini.',
             konfirmasi_salin: 'Konfirmasi Salin',
-            pesan_salin_banyak: 'Salin semua tugas dari tanggal ini ke daftar tugas hari ini?',
+            pesan_salin_banyak: 'Pilih tugas yang ingin disalin ke hari ini:',
             konfirmasi_salin_satu: 'Salin Tugas',
             pesan_salin_satu: 'Salin tugas ini ke hari ini?',
-            ya: 'Ya, Salin',
+            ya: 'Salin Terpilih',
+            pilih_semua: 'Pilih Semua'
         },
         en: {
             halo: 'Hello,',
@@ -147,10 +151,11 @@ export default function HabitTracker() {
             signup: 'Sign up with Google',
             tidak_ada_catatan: 'No notes for today.',
             konfirmasi_salin: 'Confirm Copy',
-            pesan_salin_banyak: 'Copy all tasks from this date to today\'s list?',
+            pesan_salin_banyak: 'Select tasks to copy to today\'s list:',
             konfirmasi_salin_satu: 'Copy Task',
             pesan_salin_satu: 'Copy this task to today?',
-            ya: 'Yes, Copy',
+            ya: 'Copy Selected',
+            pilih_semua: 'Select All'
         }
     }[language];
 
@@ -368,11 +373,10 @@ export default function HabitTracker() {
         await saveToFirebase(updatedHabits, completions, notes);
     };
 
-    const copyAllTasksToToday = async (date: string) => {
-        const sourceHabits = habits.filter(h => h.createdAt === date);
-        if (sourceHabits.length === 0) return;
+    const copyTasksToToday = async (tasksToCopy: Habit[]) => {
+        if (tasksToCopy.length === 0) return;
 
-        const newHabits = sourceHabits.map((h, i) => ({
+        const newHabits = tasksToCopy.map((h, i) => ({
             id: `${Date.now()}-${i}-${Math.random().toString(36).substr(2, 9)}`,
             text: h.text,
             createdAt: today
@@ -381,11 +385,28 @@ export default function HabitTracker() {
         const updatedHabits = [...habits, ...newHabits];
         setHabits(updatedHabits);
         await saveToFirebase(updatedHabits, completions, notes);
-
-        // Show feedback or switch tab? 
-        // Simple feedback via alert or toast would be nice but for now just the action
         setActiveTab('today');
     };
+
+    const prepareCopyAllTasks = (date: string) => {
+        const sourceHabits = habits.filter(h => h.createdAt === date);
+        if (sourceHabits.length === 0) return;
+
+        setSelectedTasksToCopy(sourceHabits.map(h => h.id)); // Default select all
+        setConfirmation({
+            isOpen: true,
+            title: t.konfirmasi_salin,
+            message: t.pesan_salin_banyak,
+            details: `${sourceHabits.length} Tasks`,
+            tasks: sourceHabits,
+            onConfirm: (selectedIds) => {
+                const tasksToCopy = sourceHabits.filter(h => selectedIds?.includes(h.id));
+                copyTasksToToday(tasksToCopy);
+            }
+        });
+    };
+
+
 
     const getProgress = (date: string) => {
         const dateHabits = habits.filter(h => h.createdAt === date);
@@ -832,13 +853,7 @@ export default function HabitTracker() {
                                                         <button
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
-                                                                setConfirmation({
-                                                                    isOpen: true,
-                                                                    title: t.konfirmasi_salin,
-                                                                    message: t.pesan_salin_banyak,
-                                                                    details: `${d.toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { day: 'numeric', month: 'long', year: 'numeric' })} • ${habits.filter(h => h.createdAt === dateKey).length} Tasks`,
-                                                                    onConfirm: () => copyAllTasksToToday(dateKey)
-                                                                });
+                                                                prepareCopyAllTasks(dateKey);
                                                             }}
                                                             className="p-3 rounded-full bg-slate-100 dark:bg-slate-700/50 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all active:scale-95"
                                                             title="Salin semua ke Hari Ini"
@@ -1013,7 +1028,42 @@ export default function HabitTracker() {
                         >
                             <h3 className="text-lg font-black text-slate-900 dark:text-white mb-2">{confirmation.title}</h3>
                             <p className="text-slate-500 dark:text-slate-400 text-sm mb-2 leading-relaxed">{confirmation.message}</p>
-                            {confirmation.details && (
+                            {confirmation.tasks ? (
+                                <div className="space-y-3 mb-6 max-h-[300px] overflow-y-auto pr-1 custom-scrollbar">
+                                    <div className="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-800">
+                                        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{t.pilih_semua}</span>
+                                        <button
+                                            onClick={() => {
+                                                if (selectedTasksToCopy.length === confirmation.tasks?.length) {
+                                                    setSelectedTasksToCopy([]);
+                                                } else {
+                                                    setSelectedTasksToCopy(confirmation.tasks?.map(h => h.id) || []);
+                                                }
+                                            }}
+                                            className="text-blue-600 font-bold text-xs"
+                                        >
+                                            {selectedTasksToCopy.length === confirmation.tasks?.length ? <CheckCircle2 className="w-4 h-4" /> : <Circle className="w-4 h-4" />}
+                                        </button>
+                                    </div>
+                                    {confirmation.tasks.map(task => (
+                                        <div key={task.id}
+                                            onClick={() => {
+                                                if (selectedTasksToCopy.includes(task.id)) {
+                                                    setSelectedTasksToCopy(selectedTasksToCopy.filter(id => id !== task.id));
+                                                } else {
+                                                    setSelectedTasksToCopy([...selectedTasksToCopy, task.id]);
+                                                }
+                                            }}
+                                            className="flex items-center gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors"
+                                        >
+                                            <div className={cn("shrink-0 transition-colors", selectedTasksToCopy.includes(task.id) ? "text-blue-600" : "text-slate-300")}>
+                                                {selectedTasksToCopy.includes(task.id) ? <CheckCircle2 className="w-5 h-5" /> : <div className="w-5 h-5 rounded-full border-2 border-current" />}
+                                            </div>
+                                            <span className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{task.text}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : confirmation.details && (
                                 <div className="bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl mb-6 text-xs font-bold text-slate-600 dark:text-slate-300 border border-slate-100 dark:border-slate-800 flex items-center gap-2 justify-center">
                                     <Calendar className="w-3.5 h-3.5" />
                                     {confirmation.details}
@@ -1027,7 +1077,7 @@ export default function HabitTracker() {
                                     {t.batal}
                                 </button>
                                 <button
-                                    onClick={() => { confirmation.onConfirm(); setConfirmation(null); }}
+                                    onClick={() => { confirmation.onConfirm(selectedTasksToCopy); setConfirmation(null); }}
                                     className="flex-1 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-500/30 transition-all"
                                 >
                                     {t.ya}
