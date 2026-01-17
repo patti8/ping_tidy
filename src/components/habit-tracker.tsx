@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import {
     Plus,
     Trash2,
@@ -29,7 +29,8 @@ import {
     Edit3,
     X,
     Copy,
-    Square
+    Square,
+    GripVertical
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -57,6 +58,8 @@ export default function HabitTracker() {
     const [tempNote, setTempNote] = useState('');
     const [newHabit, setNewHabit] = useState('');
     const [isSyncing, setIsSyncing] = useState(false);
+    const [showTutorial, setShowTutorial] = useState(false);
+    const [tutorialStep, setTutorialStep] = useState(0);
     const [isDarkMode, setIsDarkMode] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [dataLoading, setDataLoading] = useState(false);
@@ -214,6 +217,7 @@ export default function HabitTracker() {
         const unsubscribe = onSnapshot(userDocRef, (doc) => {
             if (doc.exists()) {
                 const data = doc.data();
+                let currentCompletions = data.completions || {};
                 if (data.habits) {
                     let loadedHabits: Habit[] = data.habits;
                     const hasLegacy = loadedHabits.some(h => !h.createdAt);
@@ -226,8 +230,23 @@ export default function HabitTracker() {
                         // Auto-migrate legacy data
                         setDoc(userDocRef, { habits: loadedHabits }, { merge: true });
                     }
-                    setHabits(loadedHabits);
-                    localStorage.setItem('local_habits_fallback', JSON.stringify(loadedHabits));
+
+                    // Sort: Today's habits (Unchecked First), maintaining relative drag order
+                    const todayStr = formatDateKey(new Date());
+                    const todayHabits = loadedHabits.filter(h => h.createdAt === todayStr);
+                    const otherHabits = loadedHabits.filter(h => h.createdAt !== todayStr);
+
+                    const sortedToday = [...todayHabits].sort((a, b) => {
+                        const aDone = (currentCompletions[todayStr] || []).includes(a.id);
+                        const bDone = (currentCompletions[todayStr] || []).includes(b.id);
+                        if (aDone === bDone) return 0;
+                        return aDone ? 1 : -1;
+                    });
+
+                    const finalHabits = [...otherHabits, ...sortedToday];
+
+                    setHabits(finalHabits);
+                    localStorage.setItem('local_habits_fallback', JSON.stringify(finalHabits));
                 }
                 if (data.completions) {
                     setCompletions(data.completions);
@@ -238,6 +257,9 @@ export default function HabitTracker() {
                     localStorage.setItem('local_notes_fallback', JSON.stringify(data.notes));
                 }
                 setLastSynced(new Date().toLocaleTimeString());
+                if (data.tutorialSeen === undefined || data.tutorialSeen === false) {
+                    setShowTutorial(true);
+                }
             }
             setIsDataLoaded(true);
             setDataLoading(false);
@@ -331,7 +353,10 @@ export default function HabitTracker() {
         if (!newHabit.trim()) return;
 
         const habit = { id: Date.now().toString(), text: newHabit.trim(), createdAt: today };
-        const updatedHabits = [...habits, habit];
+        // Insert new habit at the beginning of today's list (active habits at top)
+        const otherHabits = habits.filter(h => h.createdAt !== today);
+        const todayHabits = habits.filter(h => h.createdAt === today);
+        const updatedHabits = [...otherHabits, habit, ...todayHabits];
 
         // Optimistic UI update
         setHabits(updatedHabits);
@@ -356,7 +381,25 @@ export default function HabitTracker() {
 
         const newCompletions = { ...completions, [date]: newDayIds };
         setCompletions(newCompletions);
-        await saveToFirebase(habits, newCompletions, notes);
+
+        // Auto-sort: Unchecked at top, Checked at bottom
+        if (date === today) {
+            const currentHabits = habits.filter(h => h.createdAt === today);
+            const otherHabits = habits.filter(h => h.createdAt !== today);
+
+            const sortedToday = [...currentHabits].sort((a, b) => {
+                const aDone = newDayIds.includes(a.id);
+                const bDone = newDayIds.includes(b.id);
+                if (aDone === bDone) return 0; // Keep existing relative order
+                return aDone ? 1 : -1; // Unchecked comes first
+            });
+
+            const reorderedAll = [...otherHabits, ...sortedToday];
+            setHabits(reorderedAll);
+            await saveToFirebase(reorderedAll, newCompletions, notes);
+        } else {
+            await saveToFirebase(habits, newCompletions, notes);
+        }
     };
 
     const saveNote = async (date: string) => {
@@ -406,13 +449,27 @@ export default function HabitTracker() {
         });
     };
 
-
+    const completeTutorial = async () => {
+        setShowTutorial(false);
+        if (user) {
+            await setDoc(doc(db, 'users', user.uid), {
+                tutorialSeen: true
+            }, { merge: true });
+        }
+    };
 
     const getProgress = (date: string) => {
         const dateHabits = habits.filter(h => h.createdAt === date);
         if (dateHabits.length === 0) return 0;
         const doneCount = dateHabits.filter(h => (completions[date] || []).includes(h.id)).length;
         return Math.round((doneCount / dateHabits.length) * 100);
+    };
+
+    const handleReorder = (newTodayOrder: Habit[]) => {
+        const otherHabits = habits.filter(h => h.createdAt !== today);
+        const reorderedHabits = [...otherHabits, ...newTodayOrder];
+        setHabits(reorderedHabits);
+        saveToFirebase(reorderedHabits, completions, notes);
     };
 
     if (isLoading) {
@@ -665,25 +722,26 @@ export default function HabitTracker() {
                                             <p className="text-slate-400 font-bold text-lg md:text-xl">{t.belum_ada_data}</p>
                                         </motion.div>
                                     ) : (
-                                        habits.filter(h => h.createdAt === today).sort((a, b) => {
-                                            const isADone = (completions[today] || []).includes(a.id);
-                                            const isBDone = (completions[today] || []).includes(b.id);
-                                            return (isADone === isBDone) ? 0 : isADone ? 1 : -1;
-                                        }).map((habit) => {
-                                            const isDone = (completions[today] || []).includes(habit.id);
-                                            return (
-                                                <motion.div key={habit.id} layout initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
-                                                    className={cn("group flex items-center p-6 md:p-8 rounded-[2rem] md:rounded-[2.5rem] transition-all duration-300 border-2", isDone ? "bg-blue-600 border-blue-600 shadow-2xl shadow-blue-500/30" : "bg-white dark:bg-slate-800 border-transparent shadow-sm hover:shadow-xl dark:hover:border-slate-700")}>
-                                                    <button onClick={() => toggleHabit(habit.id)} className="mr-4 md:mr-6 focus:outline-none shrink-0">
-                                                        {isDone ? <div className="bg-white rounded-2xl p-1.5"><CheckCircle2 className="text-blue-600 w-8 h-8 md:w-10 md:h-10" /></div> : <Circle className="text-slate-200 dark:text-slate-700 w-8 h-8 md:w-10 md:h-10 hover:text-blue-500 transition-colors" />}
-                                                    </button>
-                                                    <span className={cn("flex-1 font-extrabold text-lg md:text-2xl transition-all", isDone ? "text-white/80 line-through" : "text-slate-800 dark:text-slate-100")}>{habit.text}</span>
-                                                    <button onClick={() => deleteHabit(habit.id)} className={cn("p-3 md:p-4 rounded-2xl transition-all", isDone ? "text-white/40 hover:text-white" : "opacity-0 group-hover:opacity-100 text-slate-200 hover:text-red-500")}>
-                                                        <Trash2 className="w-5 h-5 md:w-6 md:h-6" />
-                                                    </button>
-                                                </motion.div>
-                                            );
-                                        })
+                                        <Reorder.Group axis="y" values={habits.filter(h => h.createdAt === today)} onReorder={handleReorder} className="space-y-4 md:space-y-5">
+                                            {habits.filter(h => h.createdAt === today).map((habit) => {
+                                                const isDone = (completions[today] || []).includes(habit.id);
+                                                return (
+                                                    <Reorder.Item key={habit.id} value={habit}
+                                                        className={cn("group flex items-center p-4 md:p-6 rounded-[2rem] md:rounded-[2.5rem] transition-all duration-300 border-2 select-none relative", isDone ? "bg-blue-600 border-blue-600 shadow-2xl shadow-blue-500/30" : "bg-white dark:bg-slate-800 border-transparent shadow-sm hover:shadow-xl dark:hover:border-slate-700")}>
+                                                        <div className="mr-3 md:mr-4 cursor-grab active:cursor-grabbing p-2 hover:bg-black/5 dark:hover:bg-white/10 rounded-xl transition-colors text-slate-300 hover:text-slate-500 dark:text-slate-600 dark:hover:text-slate-400">
+                                                            <GripVertical className="w-5 h-5 md:w-6 md:h-6" />
+                                                        </div>
+                                                        <button onClick={() => toggleHabit(habit.id)} className="mr-3 md:mr-4 focus:outline-none shrink-0">
+                                                            {isDone ? <div className="bg-white rounded-2xl p-1.5"><CheckCircle2 className="text-blue-600 w-8 h-8 md:w-10 md:h-10" /></div> : <Circle className="text-slate-200 dark:text-slate-700 w-8 h-8 md:w-10 md:h-10 hover:text-blue-500 transition-colors" />}
+                                                        </button>
+                                                        <span className={cn("flex-1 font-extrabold text-lg md:text-2xl transition-all", isDone ? "text-white/80 line-through" : "text-slate-800 dark:text-slate-100")}>{habit.text}</span>
+                                                        <button onClick={() => deleteHabit(habit.id)} className={cn("p-3 md:p-4 rounded-2xl transition-all", isDone ? "text-white/40 hover:text-white" : "opacity-0 group-hover:opacity-100 text-slate-200 hover:text-red-500")}>
+                                                            <Trash2 className="w-5 h-5 md:w-6 md:h-6" />
+                                                        </button>
+                                                    </Reorder.Item>
+                                                );
+                                            })}
+                                        </Reorder.Group>
                                     )}
                                 </AnimatePresence>
                             </div>
@@ -1082,6 +1140,87 @@ export default function HabitTracker() {
                                 >
                                     {t.ya}
                                 </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showTutorial && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-md">
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.9 }}
+                            className="bg-white dark:bg-slate-800 rounded-[2.5rem] p-8 max-w-sm w-full shadow-2xl relative overflow-hidden"
+                        >
+                            {/* Background decoration */}
+                            <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
+                            <div className="absolute bottom-0 left-0 w-32 h-32 bg-orange-500/10 rounded-full blur-3xl translate-y-1/2 -translate-x-1/2"></div>
+
+                            <div className="relative z-10">
+                                <div className="flex justify-between items-center mb-6">
+                                    <div className="flex gap-1">
+                                        {[0, 1, 2, 3, 4].map(i => (
+                                            <div key={i} className={cn("h-1.5 rounded-full transition-all duration-300", i === tutorialStep ? "w-8 bg-blue-600" : i < tutorialStep ? "w-2 bg-blue-200" : "w-2 bg-slate-100 dark:bg-slate-700")} />
+                                        ))}
+                                    </div>
+                                    <button onClick={completeTutorial} className="text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 uppercase tracking-wider">
+                                        Skip
+                                    </button>
+                                </div>
+
+                                <div className="min-h-[280px] flex flex-col">
+                                    <AnimatePresence mode="wait">
+                                        <motion.div
+                                            key={tutorialStep}
+                                            initial={{ opacity: 0, x: 20 }}
+                                            animate={{ opacity: 1, x: 0 }}
+                                            exit={{ opacity: 0, x: -20 }}
+                                            className="flex-1 flex flex-col items-center text-center"
+                                        >
+                                            <div className="w-24 h-24 bg-blue-50 dark:bg-slate-700/50 rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-blue-500/10">
+                                                {tutorialStep === 0 && <img src="/rabbit.png" alt="Welcome" className="w-16 h-16 object-contain" />}
+                                                {tutorialStep === 1 && <Plus className="w-10 h-10 text-blue-600" />}
+                                                {tutorialStep === 2 && <CheckCircle2 className="w-10 h-10 text-green-500" />}
+                                                {tutorialStep === 3 && <Edit3 className="w-10 h-10 text-orange-500" />}
+                                                {tutorialStep === 4 && <History className="w-10 h-10 text-purple-500" />}
+                                            </div>
+
+                                            <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-3">
+                                                {tutorialStep === 0 && "Welcome to Rabbit Hub!"}
+                                                {tutorialStep === 1 && "Start Small"}
+                                                {tutorialStep === 2 && "Track Progress"}
+                                                {tutorialStep === 3 && "Daily Reflection"}
+                                                {tutorialStep === 4 && "History & Copy"}
+                                            </h3>
+
+                                            <p className="text-slate-500 dark:text-slate-400 font-medium leading-relaxed">
+                                                {tutorialStep === 0 && "Your journey to consistency starts here. Let's take a quick tour to get you started."}
+                                                {tutorialStep === 1 && "Type your target or habit for today in the input field and tap the (+) button."}
+                                                {tutorialStep === 2 && "Tap the circle on any task to mark it done. Watch your daily progress ring grow!"}
+                                                {tutorialStep === 3 && "Add notes to evaluate your day. Tap the 'Edit Note' button in the detailed view."}
+                                                {tutorialStep === 4 && "View past days in the History tab. You can easily copy tasks from past days to today."}
+                                            </p>
+                                        </motion.div>
+                                    </AnimatePresence>
+
+                                    <div className="mt-8">
+                                        <button
+                                            onClick={() => {
+                                                if (tutorialStep < 4) {
+                                                    setTutorialStep(tutorialStep + 1);
+                                                } else {
+                                                    completeTutorial();
+                                                }
+                                            }}
+                                            className="w-full py-4 rounded-2xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold hover:scale-[1.02] active:scale-[0.98] transition-all shadow-xl"
+                                        >
+                                            {tutorialStep === 4 ? "Get Started" : "Next Step"}
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </motion.div>
                     </div>
