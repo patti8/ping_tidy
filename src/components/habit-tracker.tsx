@@ -70,6 +70,9 @@ export default function HabitTracker() {
     const [editingNoteDate, setEditingNoteDate] = useState<string | null>(null);
     const [tempNote, setTempNote] = useState('');
     const [newHabit, setNewHabit] = useState('');
+
+    // Safety: If user is logged in, filter out dummy habits from rendering
+    const displayHabits = user ? habits.filter(h => !h.id.startsWith('d')) : habits;
     const [isSyncing, setIsSyncing] = useState(false);
     const [showTutorial, setShowTutorial] = useState(false);
     const [tutorialStep, setTutorialStep] = useState(0);
@@ -232,39 +235,76 @@ export default function HabitTracker() {
             return;
         }
 
-        setDataLoading(true);
-        const userDocRef = doc(db, 'users', user.uid); // Use UID instead of Email for better security
+        // Fix: Immediately clear dummy data if we are switching to User mode
+        if (habits.some(h => h.id.startsWith('d'))) {
+            setHabits([]);
+            setCompletions({});
+        }
 
-        const unsubscribe = onSnapshot(userDocRef, (doc) => {
-            if (doc.exists()) {
-                const data = doc.data();
-                let currentCompletions = data.completions || {};
-                if (data.habits) {
-                    let loadedHabits: Habit[] = data.habits;
-                    const hasLegacy = loadedHabits.some(h => !h.createdAt);
-                    if (hasLegacy) {
+        setDataLoading(true);
+        // Recovery System: Check BOTH locations to find where the user's data is hiding
+        let unsubscribe: (() => void) | undefined;
+
+        const checkAndLoadData = async () => {
+            const uidKey = user.uid;
+            const emailKey = user.email;
+
+            // Default to UID doc
+            let finalDocRef = doc(db, 'users', uidKey);
+
+            if (emailKey) {
+                try {
+                    const emailDocRef = doc(db, 'users', emailKey);
+                    const uidDocRef = doc(db, 'users', uidKey);
+
+                    const [emailSnap, uidSnap] = await Promise.all([
+                        getDoc(emailDocRef),
+                        getDoc(uidDocRef)
+                    ]);
+
+                    if (emailSnap.exists() && !uidSnap.exists()) {
+                        finalDocRef = emailDocRef;
+                    } else if (emailSnap.exists() && uidSnap.exists()) {
+                        // Heuristic: Use the one with more habits
+                        const emailData = emailSnap.data();
+                        const uidData = uidSnap.data();
+                        if ((emailData?.habits?.length || 0) >= (uidData?.habits?.length || 0)) {
+                            finalDocRef = emailDocRef;
+                        }
+                    }
+                } catch (err) {
+                    console.error("Error checking legacy docs:", err);
+                    // Fallback to UID doc
+                }
+            }
+
+            unsubscribe = onSnapshot(finalDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    let loadedHabits: Habit[] = data.habits || [];
+
+                    // Legacy migration
+                    if (loadedHabits.some(h => !h.createdAt)) {
                         const todayStr = formatDateKey(new Date());
                         loadedHabits = loadedHabits.map(h => ({
                             ...h,
                             createdAt: h.createdAt || todayStr
                         }));
-                        // Auto-migrate legacy data
-                        setDoc(userDocRef, { habits: loadedHabits }, { merge: true });
+                        // Auto-fix in background
+                        setDoc(finalDocRef, { habits: loadedHabits }, { merge: true });
                     }
 
-                    // Sort: Today's habits (Unchecked First), maintaining relative drag order
+                    // Sort
                     const todayStr = formatDateKey(new Date());
                     const todayHabits = loadedHabits.filter(h => h.createdAt === todayStr);
                     const otherHabits = loadedHabits.filter(h => h.createdAt !== todayStr);
+                    const currentCompletions = data.completions || {};
 
                     const sortedToday = [...todayHabits].sort((a, b) => {
-                        // 1. Priority Task Floating
                         if (priorityTaskId) {
                             if (a.id === priorityTaskId) return -1;
                             if (b.id === priorityTaskId) return 1;
                         }
-
-                        // 2. Unchecked First
                         const aDone = (currentCompletions[todayStr] || []).includes(a.id);
                         const bDone = (currentCompletions[todayStr] || []).includes(b.id);
                         if (aDone === bDone) return 0;
@@ -275,32 +315,89 @@ export default function HabitTracker() {
 
                     setHabits(finalHabits);
                     localStorage.setItem('local_habits_fallback', JSON.stringify(finalHabits));
-                }
-                if (data.completions) {
-                    setCompletions(data.completions);
-                    localStorage.setItem('local_completions_fallback', JSON.stringify(data.completions));
-                }
-                if (data.notes) {
-                    setNotes(data.notes);
-                    localStorage.setItem('local_notes_fallback', JSON.stringify(data.notes));
-                }
-                setLastSynced(new Date().toLocaleTimeString());
-                if (data.tutorialSeen === undefined || data.tutorialSeen === false) {
+
+                    if (data.completions) {
+                        setCompletions(data.completions);
+                        localStorage.setItem('local_completions_fallback', JSON.stringify(data.completions));
+                    } else {
+                        setCompletions({});
+                    }
+
+                    if (data.notes) {
+                        setNotes(data.notes);
+                        localStorage.setItem('local_notes_fallback', JSON.stringify(data.notes));
+                    } else {
+                        setNotes({});
+                    }
+
+                    setLastSynced(new Date().toLocaleTimeString());
+                    if (data.tutorialSeen === undefined) setShowTutorial(true);
+                } else {
+                    // New User / No data in cloud
+                    // CRITICAL: Check if we have Guest Data in local storage before wiping it!
+                    const localHabits = localStorage.getItem('local_habits_fallback');
+                    const localCompletions = localStorage.getItem('local_completions_fallback');
+                    const localNotes = localStorage.getItem('local_notes_fallback');
+
+                    if (localHabits) {
+                        try {
+                            const parsedHabits = JSON.parse(localHabits);
+                            // Filter out strictly dummy data if we want, or keep it if user modified it
+                            // For safety, let's keep all if it looks like user data
+                            if (parsedHabits.length > 0) {
+                                console.log("Migrating Guest Data to Cloud...");
+                                const parsedCompletions = localCompletions ? JSON.parse(localCompletions) : {};
+                                const parsedNotes = localNotes ? JSON.parse(localNotes) : {};
+
+                                setHabits(parsedHabits);
+                                setCompletions(parsedCompletions);
+                                setNotes(parsedNotes);
+
+                                // Auto-save to Cloud immediately
+                                setDoc(finalDocRef, {
+                                    habits: parsedHabits,
+                                    completions: parsedCompletions,
+                                    notes: parsedNotes,
+                                    migratedFromGuest: true,
+                                    lastUpdated: new Date().toISOString()
+                                }, { merge: true });
+                            } else {
+                                // Empty local habits? Start fresh
+                                setHabits([]);
+                                setCompletions({});
+                                setNotes({});
+                            }
+                        } catch (e) {
+                            console.error("Migration failed", e);
+                            setHabits([]);
+                        }
+                    } else {
+                        // Truly new user
+                        setHabits([]);
+                        setCompletions({});
+                        setNotes({});
+                    }
+
+                    setLastSynced(null);
                     setShowTutorial(true);
                 }
-            }
-            setIsDataLoaded(true);
-            setDataLoading(false);
-            setError(null);
-        }, (err) => {
-            console.error('Firestore Error:', err);
-            // Don't mark as loaded if there's an error so we don't overwrite cloud accidentally
-            setError('Cloud Sync Error: Cek Firebase Rules atau Koneksi.');
-            setDataLoading(false);
-        });
 
-        return () => unsubscribe();
-    }, [user, priorityTaskId]); // Add priorityTaskId to dependency to re-sort when it changes
+                setIsDataLoaded(true);
+                setDataLoading(false);
+                setError(null);
+            }, (err) => {
+                console.error("Firestore Error:", err);
+                setError("Sync Error. Check connection.");
+                setDataLoading(false);
+            });
+        };
+
+        checkAndLoadData();
+
+        return () => {
+            if (unsubscribe) unsubscribe();
+        };
+    }, [user, priorityTaskId]);
 
     // 3. Theme effect
     useEffect(() => {
@@ -319,7 +416,7 @@ export default function HabitTracker() {
             if (!user || !isDataLoaded) return;
 
             const todayKey = getTodayDate();
-            const storageKey = `pingtidy_briefing_${todayKey}_${user.uid}_${language}`; // Add language to key
+            const storageKey = `pingtidy_briefing_${todayKey}_${user.uid}_${language}_v2`; // Force refresh with v2
             const cached = localStorage.getItem(storageKey);
 
             if (cached) {
@@ -327,15 +424,10 @@ export default function HabitTracker() {
                 return;
             }
 
-            // Only generate if we have some history or at least today's context, 
-            // but we don't want to block if habits are empty (user might need motivation to start).
-            // However, we need to ensure habits are loaded. isDataLoaded ensures that.
-
             if (loadingBriefing) return;
-
             setLoadingBriefing(true);
 
-            // Calculate Yesterday's Stats
+            // 1. Calculate Yesterday's Stats
             const yesterday = new Date();
             yesterday.setDate(yesterday.getDate() - 1);
             const yesterdayKey = formatDateKey(yesterday);
@@ -344,17 +436,16 @@ export default function HabitTracker() {
             const yesterdayTotal = yesterdayHabitsList.length;
             const yesterdayCompletedIds = completions[yesterdayKey] || [];
             const yesterdayCompletedCount = yesterdayHabitsList.filter(h => yesterdayCompletedIds.includes(h.id)).length;
-
             const yesterdayRate = yesterdayTotal > 0 ? yesterdayCompletedCount / yesterdayTotal : 0;
 
-            const todayHabitsList = habits.filter(h => h.createdAt === todayKey).map(h => h.text);
+            const todayHabitsList = displayHabits.filter(h => h.createdAt === todayKey).map(h => h.text);
 
             const result = await generateMorningBriefing(
                 user.displayName || 'Friend',
                 yesterdayRate,
                 yesterdayTotal,
                 todayHabitsList,
-                language // Pass language
+                language
             );
 
             if (result) {
@@ -388,7 +479,8 @@ export default function HabitTracker() {
             localStorage.setItem('local_completions_fallback', JSON.stringify(newCompletions));
             localStorage.setItem('local_notes_fallback', JSON.stringify(newNotes));
 
-            await setDoc(doc(db, 'users', user.uid), {
+            const userKey = user.email || user.uid; // Ensure same key as read
+            await setDoc(doc(db, 'users', userKey), {
                 habits: newHabits,
                 completions: newCompletions,
                 notes: newNotes,
@@ -459,8 +551,9 @@ export default function HabitTracker() {
         };
 
         // Insert new habit at the beginning of today's list (active habits at top)
-        const otherHabits = habits.filter(h => h.createdAt !== today);
-        const todayHabits = habits.filter(h => h.createdAt === today);
+        const currentActiveHabits = displayHabits; // Use displayHabits to ensure we don't include dummy data
+        const otherHabits = currentActiveHabits.filter(h => h.createdAt !== today);
+        const todayHabits = currentActiveHabits.filter(h => h.createdAt === today);
         let updatedHabits = [...otherHabits, habit, ...todayHabits];
 
         // Optimistic UI update
@@ -504,7 +597,7 @@ export default function HabitTracker() {
     };
 
     const deleteHabit = async (id: string) => {
-        const updatedHabits = habits.filter(h => h.id !== id);
+        const updatedHabits = displayHabits.filter(h => h.id !== id);
         setHabits(updatedHabits);
         await saveToFirebase(updatedHabits, completions, notes);
     };
@@ -522,8 +615,8 @@ export default function HabitTracker() {
 
         // Auto-sort: Unchecked at top, Checked at bottom
         if (date === today) {
-            const currentHabits = habits.filter(h => h.createdAt === today);
-            const otherHabits = habits.filter(h => h.createdAt !== today);
+            const currentHabits = displayHabits.filter(h => h.createdAt === today);
+            const otherHabits = displayHabits.filter(h => h.createdAt !== today);
 
             const sortedToday = [...currentHabits].sort((a, b) => {
                 const aDone = newDayIds.includes(a.id);
@@ -536,7 +629,7 @@ export default function HabitTracker() {
             setHabits(reorderedAll);
             await saveToFirebase(reorderedAll, newCompletions, notes);
         } else {
-            await saveToFirebase(habits, newCompletions, notes);
+            await saveToFirebase(displayHabits, newCompletions, notes);
         }
     };
 
@@ -556,7 +649,7 @@ export default function HabitTracker() {
             isAiAnalyzing: true
         };
 
-        let updatedHabits = [...habits, habit];
+        let updatedHabits = [...displayHabits, habit];
         setHabits(updatedHabits);
         await saveToFirebase(updatedHabits, completions, notes);
 
@@ -597,14 +690,14 @@ export default function HabitTracker() {
             createdAt: today
         }));
 
-        const updatedHabits = [...habits, ...newHabits];
+        const updatedHabits = [...displayHabits, ...newHabits];
         setHabits(updatedHabits);
         await saveToFirebase(updatedHabits, completions, notes);
         setActiveTab('today');
     };
 
     const prepareCopyAllTasks = (date: string) => {
-        const sourceHabits = habits.filter(h => h.createdAt === date);
+        const sourceHabits = displayHabits.filter(h => h.createdAt === date);
         if (sourceHabits.length === 0) return;
 
         setSelectedTasksToCopy(sourceHabits.map(h => h.id)); // Default select all
@@ -631,21 +724,21 @@ export default function HabitTracker() {
     };
 
     const getProgress = (date: string) => {
-        const dateHabits = habits.filter(h => h.createdAt === date);
+        const dateHabits = displayHabits.filter(h => h.createdAt === date);
         if (dateHabits.length === 0) return 0;
         const doneCount = dateHabits.filter(h => (completions[date] || []).includes(h.id)).length;
         return Math.round((doneCount / dateHabits.length) * 100);
     };
 
     const handleReorder = (newTodayOrder: Habit[]) => {
-        const otherHabits = habits.filter(h => h.createdAt !== today);
+        const otherHabits = habits.filter(h => h.createdAt !== today); // Keep using source habits for data manipulation
         const reorderedHabits = [...otherHabits, ...newTodayOrder];
         setHabits(reorderedHabits);
         saveToFirebase(reorderedHabits, completions, notes);
     };
 
     const handleEatTheFrog = async () => {
-        const todayHabits = habits.filter(h => h.createdAt === today);
+        const todayHabits = displayHabits.filter(h => h.createdAt === today);
         const pendingHabits = todayHabits.filter(h => !(completions[today] || []).includes(h.id));
 
         if (pendingHabits.length === 0) return;
@@ -681,10 +774,10 @@ export default function HabitTracker() {
         <div className="min-h-screen bg-background transition-colors duration-500 pb-40">
             <div className="max-w-2xl mx-auto px-6 pt-10 relative">
                 <header className="flex justify-between items-center mb-6 md:mb-12">
-                    <div className="flex items-center gap-4 md:gap-5">
-                        <div className="relative hidden md:block">
+                    <div className="flex items-center gap-3 md:gap-5">
+                        <div className="relative block">
                             {user && user.photoURL ? (
-                                <img src={user.photoURL} alt="User" className="w-10 h-10 md:w-14 md:h-14 rounded-3xl shadow-xl border-4 border-white dark:border-slate-800 object-cover" />
+                                <img src={user.photoURL} alt="User" className="w-10 h-10 md:w-14 md:h-14 rounded-3xl shadow-xl border-[3px] md:border-4 border-white dark:border-slate-800 object-cover" />
                             ) : (
                                 <div className="w-10 h-10 md:w-14 md:h-14 bg-blue-100 dark:bg-slate-800 rounded-3xl flex items-center justify-center">
                                     <UserIcon className="text-blue-600 w-5 h-5 md:w-7 md:h-7" />
@@ -698,8 +791,8 @@ export default function HabitTracker() {
                             )}
                         </div>
                         <div>
-                            <div className="flex items-center gap-2 hidden md:flex">
-                                <h2 className="text-xl md:text-2xl font-['Caveat'] font-bold text-slate-500 -mb-1 transform -rotate-2">PingTidy Hub</h2>
+                            <div className="flex items-center gap-2 mb-0.5">
+                                <h2 className="text-lg md:text-2xl font-['Caveat'] font-bold text-slate-500 transform -rotate-2">PingTidy</h2>
                                 {dataLoading ? (
                                     <span className="text-[8px] md:text-[10px] text-blue-500 font-bold uppercase animate-pulse">{t.syncing}</span>
                                 ) : error ? (
@@ -711,22 +804,10 @@ export default function HabitTracker() {
                                         <Check className="w-2.5 h-2.5" /> {t.cloud_active}
                                     </span>
                                 )}
-
                             </div>
-                            <h1 className="text-lg md:text-2xl font-black text-slate-900 dark:text-white leading-tight truncate max-w-[180px] md:max-w-none">
+                            <h1 className="text-sm md:text-2xl font-black text-slate-900 dark:text-white leading-tight truncate max-w-[120px] md:max-w-none">
                                 {user ? user.displayName : "Guest User"}
                             </h1>
-                            <div className="flex flex-col items-start gap-0.5 md:flex-row md:items-center md:gap-2 mt-0.5">
-                                <p className="text-[10px] md:text-xs font-medium text-slate-500 dark:text-slate-400 truncate max-w-[140px] md:max-w-none">
-                                    {user ? user.email : "Try adding a task!"}
-                                </p>
-                                {lastSynced && !error && user && (
-                                    <span className="text-[9px] text-slate-400 dark:text-slate-600 font-bold uppercase tracking-tighter italic">{t.tersimpan} {lastSynced}</span>
-                                )}
-                                {!user && (
-                                    <span className="text-[9px] text-slate-400 dark:text-slate-600 font-bold uppercase tracking-tighter italic">DEMO MODE</span>
-                                )}
-                            </div>
                         </div>
                     </div>
                     <div className="flex items-center gap-2 md:gap-3">
@@ -829,7 +910,7 @@ export default function HabitTracker() {
                                         <Calendar className="w-4 h-4" />
                                         {new Date().toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { weekday: 'long', day: 'numeric', month: 'long' })}
                                     </p>
-                                    <h3 className="text-4xl md:text-6xl font-black text-slate-900 dark:text-white tracking-tighter leading-none">
+                                    <h3 className="text-3xl md:text-6xl font-black text-slate-900 dark:text-white tracking-tighter leading-none">
                                         {t.hari} <span className="text-blue-600">{t.terpilih}</span>
                                     </h3>
                                 </div>
@@ -875,7 +956,7 @@ export default function HabitTracker() {
                                         {thinkingFrog ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 fill-yellow-300 text-yellow-300" />}
                                         {thinkingFrog ? "Analyzing..." : "Eat The Frog"}
 
-                                        <div className="absolute top-1/2 -translate-y-1/2 left-full ml-3 pointer-events-none w-max flex items-center gap-1">
+                                        <div className="absolute top-1/2 -translate-y-1/2 left-full ml-3 pointer-events-none w-max hidden md:flex items-center gap-1">
                                             <svg className="w-8 h-6 text-blue-600 dark:text-blue-400 rotate-[10deg]" viewBox="0 0 50 30" fill="none" stroke="currentColor" strokeWidth="2">
                                                 <path d="M48 15 Q 25 25, 2 15" strokeLinecap="round" />
                                                 <path d="M2 15 L 10 10" strokeLinecap="round" />
