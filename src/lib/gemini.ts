@@ -113,3 +113,72 @@ export async function identifyPriorityTask(tasks: { id: string, text: string }[]
         return null;
     }
 }
+
+export interface MorningBriefing {
+    greeting: string;
+    summary: string;
+    suggestion: string;
+    motivation: string;
+}
+
+export async function generateMorningBriefing(
+    userName: string,
+    yesterdayCompletionRate: number,
+    yesterdayTotal: number,
+    todayHabits: string[],
+    language: 'id' | 'en' = 'id'
+): Promise<MorningBriefing | null> {
+    if (!model) return null;
+
+    try {
+        const habitsList = todayHabits.map(h => `- ${h}`).join('\n');
+
+        const prompt = `
+        You are a friendly, energetic, and supportive AI productivity coach named "PingTidy AI".
+        User Name: ${userName}
+        Language: ${language === 'id' ? 'Indonesian (Casual, Gen-Z friendly, Use slang like "Semangat", "Gaspol")' : 'English (Casual, Upbeat, Gen-Z friendly)'}
+        
+        Context:
+        - Yesterday, the user completed ${Math.round(yesterdayCompletionRate * 100)}% of their habits (Total items: ${yesterdayTotal}).
+        - Today, they have these habits planned:
+        ${habitsList}
+        
+        Generate a morning briefing in valid JSON format with the following fields:
+        1. "greeting": A warm, personalized morning greeting.
+        2. "summary": A 1-sentence comment on yesterday's performance. Be encouraging if low, celebratory if high.
+        3. "suggestion": Pick 1-2 habits from today's list to focus on first, or suggest a general mindset based on the list. Max 1 sentence.
+        4. "motivation": A short, punchy motivational quote or sentence to start the day.
+        
+        IMPORTANT: Output MUST be in ${language === 'id' ? 'Indonesian' : 'English'}.
+
+        Example JSON (${language === 'id' ? 'ID' : 'EN'}):
+        {
+            "greeting": "${language === 'id' ? 'Morning, Sarah! ☀️ Semangat pagi!' : 'Morning, Sarah! ☀️ Rise and shine!'}",
+            "summary": "${language === 'id' ? 'Kemarin produktivitasmu oke banget, pertahankan!' : 'You crushed it yesterday, keep it up!'}",
+            "suggestion": "${language === 'id' ? 'Fokus selesaikan \'Lari Pagi\' dulu biar mood booster.' : 'Knock out \'Morning Run\' first for a mood boost.'}",
+            "motivation": "${language === 'id' ? 'Consistency is key. Gaspol! 🚀' : 'Consistency is key. Let\'s go! 🚀'}"
+        }
+        `;
+
+        const result = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: {
+                responseMimeType: "application/json",
+            }
+        });
+
+        const response = result.response;
+        const text = response.text();
+        const json = JSON.parse(text);
+
+        return {
+            greeting: json.greeting || `Hi ${userName}!`,
+            summary: json.summary || "Let's make today count!",
+            suggestion: json.suggestion || "Focus on your top priority.",
+            motivation: json.motivation || "You got this!"
+        };
+    } catch (error) {
+        console.error("Gemini Briefing Error:", error);
+        return null;
+    }
+}
