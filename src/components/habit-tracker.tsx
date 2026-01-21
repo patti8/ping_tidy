@@ -54,6 +54,13 @@ interface Habit {
     isAiAnalyzing?: boolean;
 }
 
+const DUMMY_HABITS: Habit[] = [
+    { id: 'd1', text: 'Drink 2L water', emoji: '💧', category: 'Health', createdAt: '' },
+    { id: 'd2', text: 'Read 10 pages', emoji: '📚', category: 'Growth', createdAt: '' },
+    { id: 'd3', text: 'Morning meditation', emoji: '🧘', category: 'Mindfulness', createdAt: '' },
+    { id: 'd4', text: 'Work on PingTidy', emoji: '💻', category: 'Work', createdAt: '' }
+];
+
 export default function HabitTracker() {
     const [user, setUser] = useState<FirebaseUser | null>(null);
     const [activeTab, setActiveTab] = useState<'today' | 'history'>('today');
@@ -90,6 +97,7 @@ export default function HabitTracker() {
     const [priorityTaskId, setPriorityTaskId] = useState<string | null>(null);
     const [morningBriefing, setMorningBriefing] = useState<MorningBriefing | null>(null);
     const [loadingBriefing, setLoadingBriefing] = useState(false);
+    const [showLoginModal, setShowLoginModal] = useState(false);
 
     const t = {
         id: {
@@ -215,8 +223,11 @@ export default function HabitTracker() {
     // 2. Real-time Firestore Sync (Source of Truth)
     useEffect(() => {
         if (!user) {
-            setHabits([]);
-            setCompletions({});
+            // Guest Mode: Load dummy data
+            const todayStr = formatDateKey(new Date());
+            const dummyHabitsWithDate = DUMMY_HABITS.map(h => ({ ...h, createdAt: todayStr }));
+            setHabits(dummyHabitsWithDate);
+            setCompletions({}); // Reset completions for guest
             setDataLoading(false);
             return;
         }
@@ -356,7 +367,16 @@ export default function HabitTracker() {
         // Delay slightly to ensure UI is settled
         const timer = setTimeout(fetchBriefing, 1000);
         return () => clearTimeout(timer);
-    }, [user, isDataLoaded, habits.length, language]); // Re-run when language changes
+    }, [user, isDataLoaded, habits.length, language]);
+
+    // Handle Actions with Guest Check
+    const requireAuth = (action: () => void) => {
+        if (!user) {
+            setShowLoginModal(true);
+            return;
+        }
+        action();
+    };
 
     const saveToFirebase = async (newHabits: Habit[], newCompletions: { [date: string]: string[] }, newNotes: { [date: string]: string }) => {
         if (!user || !isDataLoaded) return; // CRITICAL: Stop save if data haven't loaded from cloud yet
@@ -423,6 +443,10 @@ export default function HabitTracker() {
 
     const addHabit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!user) {
+            setShowLoginModal(true);
+            return;
+        }
         if (!newHabit.trim()) return;
 
         const habitId = Date.now().toString();
@@ -650,111 +674,7 @@ export default function HabitTracker() {
     }
 
     if (!user) {
-        return (
-            <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-white to-blue-50 dark:from-slate-950 dark:to-slate-900 p-6 md:p-12">
-                <div className="w-full max-w-5xl grid md:grid-cols-2 gap-12 items-center">
-                    <motion.div
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        className="text-center md:text-left max-w-sm mx-auto md:mx-0"
-                    >
-                        <div className="w-24 h-24 md:w-32 md:h-32 bg-white dark:bg-slate-800 rounded-[2.5rem] flex items-center justify-center mx-auto md:mx-0 mb-8 shadow-2xl shadow-blue-500/20 p-2">
-                            <img
-                                src="/pingtidy.png"
-                                alt="PingTidy Logo"
-                                className="w-full h-full object-contain mix-blend-multiply dark:invert dark:mix-blend-screen opacity-90"
-                            />
-                        </div>
-                        <h1 className="text-5xl font-black text-slate-900 dark:text-white mb-4 tracking-tighter">
-                            PingTidy
-                        </h1>
-                        <p className="text-slate-500 dark:text-slate-400 mb-10 text-lg leading-relaxed font-medium">
-                            {t.tagline}
-                        </p>
-                        <div className="w-full space-y-4">
-                            <button
-                                onClick={loginWithGoogle}
-                                className="w-full flex items-center justify-center gap-4 bg-white dark:bg-slate-800 text-slate-700 dark:text-white font-bold py-5 px-8 rounded-3xl shadow-xl hover:shadow-2xl transition-all border border-slate-100 dark:border-slate-700 active:scale-[0.98] text-lg"
-                            >
-                                <svg className="w-6 h-6" viewBox="0 0 24 24">
-                                    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
-                                    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
-                                    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05" />
-                                    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
-                                </svg>
-                                {t.mulai}
-                            </button>
-                            <button
-                                onClick={signupWithGoogle}
-                                className="w-full flex items-center justify-center gap-4 bg-blue-600 text-white font-bold py-5 px-8 rounded-3xl shadow-xl shadow-blue-500/30 hover:shadow-2xl hover:bg-blue-700 transition-all active:scale-[0.98] text-lg"
-                            >
-                                <div className="bg-white rounded-full p-1 opacity-90">
-                                    <svg className="w-4 h-4" viewBox="0 0 24 24">
-                                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
-                                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
-                                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05" />
-                                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
-                                    </svg>
-                                </div>
-                                {t.signup}
-                            </button>
-                        </div>
-                    </motion.div>
-
-                    <motion.div
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: 0.2 }}
-                        className="w-full max-w-sm mx-auto md:max-w-none"
-                    >
-                        <p className="text-center md:text-left text-[10px] font-black text-slate-300 dark:text-slate-600 uppercase tracking-[0.2em] mb-6">
-                            Loved by simple people
-                        </p>
-                        <div className="space-y-4">
-                            {[
-                                {
-                                    name: "Sarah Jenkins",
-                                    role: "Product Manager at TechFlow",
-                                    text: "PingTidy changed how I view my daily progress. Simple, effectively beautiful.",
-                                    initial: "S",
-                                    color: "bg-pink-500"
-                                },
-                                {
-                                    name: "David Chen",
-                                    role: "Freelance Designer",
-                                    text: "The cleanest habit tracker I've ever used. The visual feedback is incredibly satisfying.",
-                                    initial: "D",
-                                    color: "bg-indigo-500"
-                                },
-                                {
-                                    name: "Marcus Thompson",
-                                    role: "Senior Developer",
-                                    text: "Finally, a tracker that doesn't feel like a chore. It just works.",
-                                    initial: "M",
-                                    color: "bg-emerald-500"
-                                }
-                            ].map((testimonial, i) => (
-                                <div key={i} className="bg-white dark:bg-slate-800 p-5 rounded-3xl shadow-lg shadow-blue-900/5 border border-slate-100 dark:border-slate-700 flex items-start gap-4 hover:scale-[1.02] transition-transform duration-300">
-                                    <div className={`w-10 h-10 rounded-full ${testimonial.color} flex items-center justify-center shrink-0 shadow-lg shadow-blue-500/20`}>
-                                        <span className="text-white font-bold text-sm">{testimonial.initial}</span>
-                                    </div>
-                                    <div>
-                                        <p className="text-slate-600 dark:text-slate-300 text-sm font-medium leading-relaxed mb-2.5">
-                                            "{testimonial.text}"
-                                        </p>
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-slate-900 dark:text-white text-xs font-bold">{testimonial.name}</span>
-                                            <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
-                                            <span className="text-slate-400 text-[10px] font-medium">{testimonial.role}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </motion.div>
-                </div>
-            </div>
-        );
+        // Fallthrough to main UI with Guest Mode
     }
 
     return (
@@ -763,7 +683,7 @@ export default function HabitTracker() {
                 <header className="flex justify-between items-center mb-6 md:mb-12">
                     <div className="flex items-center gap-4 md:gap-5">
                         <div className="relative hidden md:block">
-                            {user.photoURL ? (
+                            {user && user.photoURL ? (
                                 <img src={user.photoURL} alt="User" className="w-10 h-10 md:w-14 md:h-14 rounded-3xl shadow-xl border-4 border-white dark:border-slate-800 object-cover" />
                             ) : (
                                 <div className="w-10 h-10 md:w-14 md:h-14 bg-blue-100 dark:bg-slate-800 rounded-3xl flex items-center justify-center">
@@ -791,12 +711,20 @@ export default function HabitTracker() {
                                         <Check className="w-2.5 h-2.5" /> {t.cloud_active}
                                     </span>
                                 )}
+
                             </div>
-                            <h1 className="text-lg md:text-2xl font-black text-slate-900 dark:text-white leading-tight truncate max-w-[180px] md:max-w-none">{user.displayName}</h1>
+                            <h1 className="text-lg md:text-2xl font-black text-slate-900 dark:text-white leading-tight truncate max-w-[180px] md:max-w-none">
+                                {user ? user.displayName : "Guest User"}
+                            </h1>
                             <div className="flex flex-col items-start gap-0.5 md:flex-row md:items-center md:gap-2 mt-0.5">
-                                <p className="text-[10px] md:text-xs font-medium text-slate-500 dark:text-slate-400 truncate max-w-[140px] md:max-w-none">{user.email}</p>
-                                {lastSynced && !error && (
+                                <p className="text-[10px] md:text-xs font-medium text-slate-500 dark:text-slate-400 truncate max-w-[140px] md:max-w-none">
+                                    {user ? user.email : "Try adding a task!"}
+                                </p>
+                                {lastSynced && !error && user && (
                                     <span className="text-[9px] text-slate-400 dark:text-slate-600 font-bold uppercase tracking-tighter italic">{t.tersimpan} {lastSynced}</span>
+                                )}
+                                {!user && (
+                                    <span className="text-[9px] text-slate-400 dark:text-slate-600 font-bold uppercase tracking-tighter italic">DEMO MODE</span>
                                 )}
                             </div>
                         </div>
@@ -811,10 +739,17 @@ export default function HabitTracker() {
                             className="p-2 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-blue-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl">
                             {isDarkMode ? <Sun className="w-5 h-5 md:w-6 md:h-6" /> : <Moon className="w-5 h-5 md:w-6 md:h-6" />}
                         </button>
-                        <button onClick={handleLogout}
-                            className="p-2 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-red-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl">
-                            <LogOut className="w-5 h-5 md:w-6 md:h-6" />
-                        </button>
+                        {user ? (
+                            <button onClick={handleLogout}
+                                className="p-2 md:p-4 bg-white dark:bg-slate-800 rounded-2xl md:rounded-3xl text-slate-500 dark:text-slate-400 hover:text-red-600 transition-all border border-slate-100 dark:border-slate-700 shadow-sm hover:shadow-xl">
+                                <LogOut className="w-5 h-5 md:w-6 md:h-6" />
+                            </button>
+                        ) : (
+                            <button onClick={() => setShowLoginModal(true)}
+                                className="p-2 md:p-4 bg-blue-600 rounded-2xl md:rounded-3xl text-white hover:bg-blue-700 transition-all border border-blue-500 shadow-lg shadow-blue-500/30">
+                                <span className="text-xs font-bold px-2">Login</span>
+                            </button>
+                        )}
                     </div>
                 </header>
 
@@ -1503,6 +1438,51 @@ export default function HabitTracker() {
                     </div>
                 )}
             </AnimatePresence>
-        </div>
+
+
+            <AnimatePresence>
+                {showLoginModal && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/80 backdrop-blur-md">
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 0.9 }}
+                            className="bg-white dark:bg-slate-800 rounded-[2.5rem] p-8 max-w-sm w-full shadow-2xl relative overflow-hidden text-center"
+                        >
+                            <button
+                                onClick={() => setShowLoginModal(false)}
+                                className="absolute top-6 right-6 p-2 bg-slate-100 dark:bg-slate-700 rounded-full hover:bg-slate-200"
+                            >
+                                <X className="w-5 h-5 text-slate-500" />
+                            </button>
+
+                            <div className="w-24 h-24 bg-blue-50 dark:bg-slate-700/50 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl shadow-blue-500/10">
+                                <img src="/pingtidy.png" alt="Login" className="w-16 h-16 object-contain" />
+                            </div>
+
+                            <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-3">
+                                Save your progress
+                            </h3>
+                            <p className="text-slate-500 dark:text-slate-400 font-medium leading-relaxed mb-8">
+                                Sign in to sync your habits across devices and unlock AI features.
+                            </p>
+
+                            <button
+                                onClick={() => { setShowLoginModal(false); loginWithGoogle(); }}
+                                className="w-full flex items-center justify-center gap-4 bg-white dark:bg-slate-700 text-slate-700 dark:text-white font-bold py-4 px-6 rounded-2xl shadow-xl border border-slate-100 dark:border-slate-600 active:scale-[0.98] mb-4"
+                            >
+                                <svg className="w-6 h-6" viewBox="0 0 24 24">
+                                    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
+                                    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
+                                    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05" />
+                                    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.66l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
+                                </svg>
+                                Start with Google
+                            </button>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+        </div >
     );
 }
