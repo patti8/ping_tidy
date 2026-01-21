@@ -30,13 +30,16 @@ import {
     X,
     Copy,
     Square,
-    GripVertical
+    GripVertical,
+    Zap,
+    Loader2
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { db, auth, googleProvider } from '@/lib/firebase';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser, GoogleAuthProvider } from 'firebase/auth';
+import { suggestTaskDetails, identifyPriorityTask } from '@/lib/gemini';
 
 function cn(...inputs: ClassValue[]) {
     return twMerge(clsx(inputs));
@@ -46,6 +49,9 @@ interface Habit {
     id: string;
     text: string;
     createdAt?: string;
+    emoji?: string;
+    category?: string;
+    isAiAnalyzing?: boolean;
 }
 
 export default function HabitTracker() {
@@ -80,6 +86,8 @@ export default function HabitTracker() {
         onConfirm: (selectedIds?: string[]) => void;
     } | null>(null);
     const [selectedTasksToCopy, setSelectedTasksToCopy] = useState<string[]>([]);
+    const [thinkingFrog, setThinkingFrog] = useState(false);
+    const [priorityTaskId, setPriorityTaskId] = useState<string | null>(null);
 
     const t = {
         id: {
@@ -352,17 +360,58 @@ export default function HabitTracker() {
         e.preventDefault();
         if (!newHabit.trim()) return;
 
-        const habit = { id: Date.now().toString(), text: newHabit.trim(), createdAt: today };
+        const habitId = Date.now().toString();
+        // Initial habit with loading state for AI
+        const habit: Habit = {
+            id: habitId,
+            text: newHabit.trim(),
+            createdAt: today,
+            isAiAnalyzing: true
+        };
+
         // Insert new habit at the beginning of today's list (active habits at top)
         const otherHabits = habits.filter(h => h.createdAt !== today);
         const todayHabits = habits.filter(h => h.createdAt === today);
-        const updatedHabits = [...otherHabits, habit, ...todayHabits];
+        let updatedHabits = [...otherHabits, habit, ...todayHabits];
 
         // Optimistic UI update
         setHabits(updatedHabits);
         setNewHabit('');
 
+        // Save initial state
         await saveToFirebase(updatedHabits, completions, notes);
+
+        // Call Gemini AI for Smart Emoji & Label
+        try {
+            const suggestion = await suggestTaskDetails(habit.text);
+
+            // Update the specific habit with AI results
+            updatedHabits = updatedHabits.map(h => {
+                if (h.id === habitId) {
+                    return {
+                        ...h,
+                        emoji: suggestion.emoji,
+                        category: suggestion.category,
+                        isAiAnalyzing: false
+                    };
+                }
+                return h;
+            });
+
+            setHabits(updatedHabits);
+            await saveToFirebase(updatedHabits, completions, notes);
+        } catch (error) {
+            console.error("AI Auto-label failed:", error);
+            // Remove analyzing state if failed
+            updatedHabits = updatedHabits.map(h => {
+                if (h.id === habitId) {
+                    return { ...h, isAiAnalyzing: false, emoji: '📝' }; // Default emoji
+                }
+                return h;
+            });
+            setHabits(updatedHabits);
+            await saveToFirebase(updatedHabits, completions, notes);
+        }
     };
 
     const deleteHabit = async (id: string) => {
@@ -470,6 +519,27 @@ export default function HabitTracker() {
         const reorderedHabits = [...otherHabits, ...newTodayOrder];
         setHabits(reorderedHabits);
         saveToFirebase(reorderedHabits, completions, notes);
+    };
+
+    const handleEatTheFrog = async () => {
+        const todayHabits = habits.filter(h => h.createdAt === today);
+        const pendingHabits = todayHabits.filter(h => !(completions[today] || []).includes(h.id));
+
+        if (pendingHabits.length === 0) return;
+
+        setThinkingFrog(true);
+        setPriorityTaskId(null);
+
+        try {
+            const priorityId = await identifyPriorityTask(pendingHabits);
+            if (priorityId) {
+                setPriorityTaskId(priorityId);
+            }
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setThinkingFrog(false);
+        }
     };
 
     if (isLoading) {
@@ -700,6 +770,20 @@ export default function HabitTracker() {
                                 </div>
                             </div>
 
+                            {/* Eat The Frog Button */}
+                            {habits.filter(h => h.createdAt === today && !(completions[today] || []).includes(h.id)).length > 1 && (
+                                <div className="flex justify-end -mt-4 mb-2">
+                                    <button
+                                        onClick={handleEatTheFrog}
+                                        disabled={thinkingFrog}
+                                        className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white px-4 py-2 rounded-xl shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 hover:scale-105 active:scale-95 transition-all text-xs md:text-sm font-bold disabled:opacity-70 disabled:cursor-not-allowed"
+                                    >
+                                        {thinkingFrog ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 fill-yellow-300 text-yellow-300" />}
+                                        {thinkingFrog ? "Analyzing..." : "Eat The Frog"}
+                                    </button>
+                                </div>
+                            )}
+
                             <form onSubmit={addHabit} className="relative group">
                                 <input type="text" value={newHabit} onChange={(e) => setNewHabit(e.target.value)} placeholder={t.placeholder}
                                     className="w-full bg-white dark:bg-slate-800 border-none shadow-2xl shadow-blue-200/40 dark:shadow-none rounded-[2rem] md:rounded-[2.5rem] py-6 md:py-8 px-6 md:px-10 pr-16 md:pr-20 focus:ring-4 focus:ring-blue-500/10 outline-none text-slate-700 dark:text-white text-lg md:text-xl font-medium transition-all" />
@@ -726,15 +810,34 @@ export default function HabitTracker() {
                                             {habits.filter(h => h.createdAt === today).map((habit) => {
                                                 const isDone = (completions[today] || []).includes(habit.id);
                                                 return (
-                                                    <Reorder.Item key={habit.id} value={habit}
-                                                        className={cn("group flex items-center p-4 md:p-6 rounded-[2rem] md:rounded-[2.5rem] transition-all duration-300 border-2 select-none relative", isDone ? "bg-blue-600 border-blue-600 shadow-2xl shadow-blue-500/30" : "bg-white dark:bg-slate-800 border-transparent shadow-sm hover:shadow-xl dark:hover:border-slate-700")}>
+                                                    <Reorder.Item
+                                                        key={habit.id}
+                                                        value={habit}
+                                                        layout
+                                                        whileDrag={{ scale: 1.02, zIndex: 50, cursor: "grabbing" }}
+                                                        transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                                                        className={cn("group flex items-center p-4 md:p-6 rounded-[2rem] md:rounded-[2.5rem] transition-colors duration-200 border-2 select-none relative",
+                                                            isDone ? "bg-blue-600 border-blue-600 shadow-2xl shadow-blue-500/30" :
+                                                                habit.id === priorityTaskId ? "bg-white dark:bg-slate-800 border-purple-500 shadow-xl shadow-purple-500/20 scale-[1.02] ring-2 ring-purple-500/20 z-10" : "bg-white dark:bg-slate-800 border-transparent shadow-sm hover:shadow-xl dark:hover:border-slate-700")}>
+
+                                                        {habit.id === priorityTaskId && !isDone && (
+                                                            <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-purple-600 text-white text-[10px] font-black uppercase tracking-widest py-1 px-3 rounded-full flex items-center gap-1 shadow-lg z-20 whitespace-nowrap">
+                                                                <Zap className="w-3 h-3 fill-yellow-300 text-yellow-300" />
+                                                                Priority Task
+                                                            </div>
+                                                        )}
+
                                                         <div className="mr-3 md:mr-4 cursor-grab active:cursor-grabbing p-2 hover:bg-black/5 dark:hover:bg-white/10 rounded-xl transition-colors text-slate-300 hover:text-slate-500 dark:text-slate-600 dark:hover:text-slate-400">
                                                             <GripVertical className="w-5 h-5 md:w-6 md:h-6" />
                                                         </div>
                                                         <button onClick={() => toggleHabit(habit.id)} className="mr-3 md:mr-4 focus:outline-none shrink-0">
                                                             {isDone ? <div className="bg-white rounded-2xl p-1.5"><CheckCircle2 className="text-blue-600 w-8 h-8 md:w-10 md:h-10" /></div> : <Circle className="text-slate-200 dark:text-slate-700 w-8 h-8 md:w-10 md:h-10 hover:text-blue-500 transition-colors" />}
                                                         </button>
-                                                        <span className={cn("flex-1 font-extrabold text-lg md:text-2xl transition-all", isDone ? "text-white/80 line-through" : "text-slate-800 dark:text-slate-100")}>{habit.text}</span>
+                                                        <span className={cn("flex-1 font-extrabold text-lg md:text-2xl transition-all flex items-center gap-3", isDone ? "text-white/80 line-through" : "text-slate-800 dark:text-slate-100")}>
+                                                            {habit.emoji && <span className="text-xl md:text-3xl">{habit.emoji}</span>}
+                                                            <span>{habit.text}</span>
+                                                            {habit.isAiAnalyzing && <RefreshCw className="w-4 h-4 animate-spin text-blue-500 opacity-50" />}
+                                                        </span>
                                                         <button onClick={() => deleteHabit(habit.id)} className={cn("p-3 md:p-4 rounded-2xl transition-all", isDone ? "text-white/40 hover:text-white" : "opacity-0 group-hover:opacity-100 text-slate-200 hover:text-red-500")}>
                                                             <Trash2 className="w-5 h-5 md:w-6 md:h-6" />
                                                         </button>
@@ -771,22 +874,22 @@ export default function HabitTracker() {
                                         initial={{ opacity: 0, height: 0 }}
                                         animate={{ opacity: 1, height: 'auto' }}
                                         exit={{ opacity: 0, height: 0 }}
-                                        className="bg-white dark:bg-slate-800 rounded-[2rem] md:rounded-[2.5rem] p-6 md:p-8 shadow-xl border border-slate-100 dark:border-slate-700 overflow-hidden"
+                                        className="bg-zinc-50 dark:bg-zinc-900/50 rounded-[2rem] p-6 shadow-inner border border-zinc-100 dark:border-zinc-800 overflow-hidden mb-8"
                                     >
-                                        <div className="flex justify-between items-center mb-4 md:mb-6">
-                                            <button onClick={() => setCalendarMonth(new Date(calendarMonth.setMonth(calendarMonth.getMonth() - 1)))} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition-colors">
-                                                <ChevronLeft className="w-5 h-5 text-slate-400" />
+                                        <div className="flex justify-between items-center mb-6 px-2">
+                                            <button onClick={() => setCalendarMonth(new Date(calendarMonth.setMonth(calendarMonth.getMonth() - 1)))} className="p-2 hover:bg-white dark:hover:bg-zinc-800 rounded-full shadow-sm transition-all border border-transparent hover:border-zinc-200 dark:hover:border-zinc-700">
+                                                <ChevronLeft className="w-4 h-4 text-zinc-500" />
                                             </button>
-                                            <h4 className="font-black text-slate-900 dark:text-white uppercase tracking-widest text-xs md:text-sm">
+                                            <h4 className="font-bold text-lg text-slate-900 dark:text-white tracking-tight">
                                                 {calendarMonth.toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { month: 'long', year: 'numeric' })}
                                             </h4>
-                                            <button onClick={() => setCalendarMonth(new Date(calendarMonth.setMonth(calendarMonth.getMonth() + 1)))} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition-colors">
-                                                <ChevronRight className="w-5 h-5 text-slate-400" />
+                                            <button onClick={() => setCalendarMonth(new Date(calendarMonth.setMonth(calendarMonth.getMonth() + 1)))} className="p-2 hover:bg-white dark:hover:bg-zinc-800 rounded-full shadow-sm transition-all border border-transparent hover:border-zinc-200 dark:hover:border-zinc-700">
+                                                <ChevronRight className="w-4 h-4 text-zinc-500" />
                                             </button>
                                         </div>
-                                        <div className="grid grid-cols-7 gap-1 md:gap-2">
+                                        <div className="grid grid-cols-7 gap-y-4 gap-x-2">
                                             {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, i) => (
-                                                <div key={i} className="text-[8px] md:text-[10px] font-black text-slate-300 dark:text-slate-600 text-center py-2">{day}</div>
+                                                <div key={i} className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 text-center uppercase tracking-wider">{day}</div>
                                             ))}
                                             {(() => {
                                                 const days = [];
@@ -801,18 +904,11 @@ export default function HabitTracker() {
                                                     const progress = getProgress(dateStr);
                                                     const isToday = dateStr === today;
                                                     const isSelected = selectedDate === dateStr;
+                                                    const hasData = habits.some(h => h.createdAt === dateStr);
 
-                                                    const getProgressColor = (p: number, type: 'bg' | 'text' | 'border' | 'ring') => {
-                                                        if (p === 100) return type === 'bg' ? 'bg-green-500' : type === 'text' ? 'text-green-600' : type === 'border' ? 'border-green-500' : 'ring-green-500/20';
-                                                        if (p > 50) return type === 'bg' ? 'bg-blue-500' : type === 'text' ? 'text-blue-600' : type === 'border' ? 'border-blue-600' : 'ring-blue-500/20';
-                                                        if (p > 0) return type === 'bg' ? 'bg-orange-500' : type === 'text' ? 'text-orange-500' : type === 'border' ? 'border-orange-500' : 'ring-orange-500/20';
-                                                        // Default (0% or just active state for empty days)
-                                                        return type === 'bg' ? 'bg-slate-100 dark:bg-slate-900' : type === 'text' ? 'text-slate-600 dark:text-slate-400' : type === 'border' ? 'border-blue-600' : 'ring-blue-500/20';
-                                                    };
-
-                                                    const activeColorText = progress > 0 ? getProgressColor(progress, 'text') : 'text-blue-600';
-                                                    const activeColorBorder = progress > 0 ? getProgressColor(progress, 'border') : 'border-blue-600';
-                                                    const activeColorRing = progress > 0 ? getProgressColor(progress, 'ring') : 'ring-blue-500/20';
+                                                    let bgClass = "bg-transparent text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-zinc-800";
+                                                    if (isSelected) bgClass = "bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-md";
+                                                    else if (isToday) bgClass = "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-bold";
 
                                                     days.push(
                                                         <button
@@ -822,29 +918,32 @@ export default function HabitTracker() {
                                                                 setExpandedDate(dateStr);
                                                             }}
                                                             className={cn(
-                                                                "relative aspect-square flex flex-col items-center justify-center rounded-lg md:rounded-xl transition-all group overflow-hidden border-2",
-                                                                isSelected ? `${activeColorBorder} ring-2 ${activeColorRing}` : "border-transparent"
+                                                                "h-10 w-10 mx-auto flex flex-col items-center justify-center rounded-full transition-all relative text-sm",
+                                                                bgClass
                                                             )}
                                                         >
-                                                            <div
-                                                                className={cn(
-                                                                    "absolute inset-0 transition-all opacity-20",
-                                                                    getProgressColor(progress, 'bg')
-                                                                )}
-                                                                style={{ height: `${progress}%`, top: 'auto' }}
-                                                            />
-                                                            <span className={cn(
-                                                                "relative z-10 text-[10px] md:text-xs font-bold",
-                                                                isToday ? `${activeColorText} underline decoration-2 underline-offset-4` :
-                                                                    isSelected ? activeColorText : "text-slate-600 dark:text-slate-400"
-                                                            )}>
-                                                                {i}
-                                                            </span>
-                                                            {progress > 0 && (
-                                                                <span className={cn(
-                                                                    "relative z-10 text-[6px] md:text-[8px] font-black leading-none mt-0.5",
-                                                                    progress > 50 ? "text-blue-600 dark:text-blue-400" : "text-orange-500 dark:text-orange-400"
-                                                                )}>{progress}%</span>
+                                                            <span className="relative z-10">{i}</span>
+                                                            {hasData && (
+                                                                <svg className="absolute inset-0 w-full h-full -rotate-90 p-0.5" viewBox="0 0 36 36">
+                                                                    <path
+                                                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                                                        fill="none"
+                                                                        stroke={isSelected ? "rgba(255,255,255,0.2)" : "rgba(203, 213, 225, 0.3)"} // Low opacity track
+                                                                        strokeWidth="3"
+                                                                    />
+                                                                    <path
+                                                                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                                                        fill="none"
+                                                                        stroke={
+                                                                            isSelected ? "#fff" :
+                                                                                progress === 100 ? "#22c55e" :
+                                                                                    progress > 0 ? "#3b82f6" : "transparent"
+                                                                        }
+                                                                        strokeWidth="3"
+                                                                        strokeDasharray={`${progress}, 100`}
+                                                                        strokeLinecap="round"
+                                                                    />
+                                                                </svg>
                                                             )}
                                                         </button>
                                                     );
@@ -889,49 +988,50 @@ export default function HabitTracker() {
                                         <div
                                             key={dateKey}
                                             className={cn(
-                                                "rounded-[2rem] md:rounded-[3rem] shadow-sm border-2 transition-all overflow-hidden",
-                                                isToday ? `bg-white dark:bg-slate-800 ${borderColor}` : "bg-white dark:bg-slate-800 border-transparent",
-                                                isExpanded && `ring-4 ${ringColor}`
+                                                "group rounded-[2.5rem] transition-all overflow-hidden",
+                                                isToday ? "bg-white dark:bg-slate-800 shadow-xl border border-blue-100 dark:border-blue-900/30" : "bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/80 border border-slate-100 dark:border-slate-800",
+                                                isExpanded && "ring-0"
                                             )}
                                         >
                                             <button
                                                 onClick={() => setExpandedDate(isExpanded ? null : dateKey)}
-                                                className="w-full text-left p-6 md:p-8 focus:outline-none"
+                                                className="w-full text-left p-6 flex items-center justify-between gap-4 focus:outline-none"
                                             >
-                                                <div className="flex justify-between items-center">
+                                                <div className="flex items-center gap-4">
+                                                    <div className={cn(
+                                                        "w-14 h-14 rounded-2xl flex flex-col items-center justify-center border-2",
+                                                        isToday ? "bg-blue-600 border-blue-600 text-white" : "bg-transparent border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400"
+                                                    )}>
+                                                        <span className="text-[10px] font-bold uppercase tracking-wider">{d.toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { month: 'short' })}</span>
+                                                        <span className="text-xl font-black leading-none">{d.getDate()}</span>
+                                                    </div>
                                                     <div>
-                                                        <span className="block text-[8px] md:text-[10px] font-black text-slate-500 dark:text-slate-500 uppercase tracking-[0.2em] mb-1">{d.toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { month: 'long', year: 'numeric' })}</span>
-                                                        <div className="flex items-center gap-2 md:gap-3">
-                                                            <span className="font-black text-slate-900 dark:text-white text-xl md:text-2xl tracking-tight">{isToday ? t.hari_ini : d.toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { weekday: 'long', day: 'numeric' })}</span>
-                                                            {isExpanded ? <ChevronUp className={cn("w-4 h-4 md:w-5 md:h-5", chevronColor)} /> : <ChevronDown className="w-4 h-4 md:w-5 md:h-5 text-slate-300" />}
+                                                        <h4 className="font-bold text-slate-900 dark:text-white text-lg">
+                                                            {isToday ? t.hari_ini : d.toLocaleDateString(language === 'id' ? 'id-ID' : 'en-US', { weekday: 'long' })}
+                                                        </h4>
+                                                        <div className="flex items-center gap-2 mt-1">
+                                                            <div className="flex-1 h-1.5 w-24 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                                                                <div className={cn("h-full rounded-full", progress === 100 ? "bg-green-500" : "bg-blue-500")} style={{ width: `${progress}%` }} />
+                                                            </div>
+                                                            <span className="text-xs font-bold text-slate-400">{progress}%</span>
                                                         </div>
                                                     </div>
+                                                </div>
 
+                                                <div className="flex items-center gap-4">
                                                     {!isToday && habits.filter(h => h.createdAt === dateKey).length > 0 && (
                                                         <button
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 prepareCopyAllTasks(dateKey);
                                                             }}
-                                                            className="p-3 rounded-full bg-slate-100 dark:bg-slate-700/50 text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all active:scale-95"
+                                                            className="w-10 h-10 rounded-full flex items-center justify-center text-slate-300 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all active:scale-95"
                                                             title="Salin semua ke Hari Ini"
                                                         >
-                                                            <Copy className="w-4 h-4 md:w-5 md:h-5" />
+                                                            <Copy className="w-5 h-5" />
                                                         </button>
                                                     )}
-
-                                                    <div className="text-right">
-                                                        <div className={cn("text-xl md:text-2xl font-black flex items-center gap-2 justify-end", progress > 50 ? "text-blue-600" : "text-orange-500")}>
-                                                            <span>{progress}%</span>
-                                                            <span className="text-sm md:text-base text-slate-300 dark:text-slate-600">/</span>
-                                                            <span className="text-sm md:text-base text-slate-400 dark:text-slate-500">{habits.filter(h => h.createdAt === dateKey).length}</span>
-                                                        </div>
-                                                        <div className="text-[8px] md:text-[10px] font-bold text-slate-500 dark:text-slate-500 uppercase tracking-widest">{t.selesai}</div>
-                                                    </div>
-                                                </div>
-
-                                                <div className="w-full bg-slate-100 dark:bg-slate-900 h-3 md:h-4 rounded-full overflow-hidden p-1 mt-4 md:mt-6">
-                                                    <motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} className={cn("h-full rounded-full shadow-lg", progress > 50 ? "bg-blue-600 shadow-blue-600/20" : "bg-orange-500 shadow-orange-500/20")} />
+                                                    {isExpanded ? <ChevronUp className="w-5 h-5 text-slate-300" /> : <ChevronDown className="w-5 h-5 text-slate-300" />}
                                                 </div>
                                             </button>
 
@@ -965,6 +1065,7 @@ export default function HabitTracker() {
                                                                                 "text-xs md:text-sm font-bold truncate w-full",
                                                                                 habitDone ? "text-slate-900 dark:text-white" : "text-slate-400 dark:text-slate-600"
                                                                             )}>
+                                                                                {habit.emoji && <span className="mr-2">{habit.emoji}</span>}
                                                                                 {habit.text}
                                                                             </span>
                                                                             <button
