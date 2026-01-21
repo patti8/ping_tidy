@@ -202,6 +202,12 @@ export default function HabitTracker() {
             const savedLang = localStorage.getItem('language');
             if (savedLang === 'en' || savedLang === 'id') setLanguage(savedLang);
 
+            // Check if tutorial was already seen
+            const tutorialSeen = localStorage.getItem('pingtidy_tutorial_seen');
+            if (tutorialSeen === 'true') {
+                setShowTutorial(false);
+            }
+
             // Load local fallback for immediate UI response
             const localHabits = localStorage.getItem('local_habits_fallback');
             const localCompletions = localStorage.getItem('local_completions_fallback');
@@ -331,7 +337,11 @@ export default function HabitTracker() {
                     }
 
                     setLastSynced(new Date().toLocaleTimeString());
-                    if (data.tutorialSeen === undefined) setShowTutorial(true);
+                    // Check BOTH Firestore and localStorage for tutorial status
+                    const localTutorialSeen = localStorage.getItem('pingtidy_tutorial_seen');
+                    if (data.tutorialSeen === undefined && localTutorialSeen !== 'true') {
+                        setShowTutorial(true);
+                    }
                 } else {
                     // New User / No data in cloud
                     // CRITICAL: Check if we have Guest Data in local storage before wiping it!
@@ -716,6 +726,10 @@ export default function HabitTracker() {
 
     const completeTutorial = async () => {
         setShowTutorial(false);
+        // Save to localStorage for guest users
+        localStorage.setItem('pingtidy_tutorial_seen', 'true');
+
+        // Save to Firestore for logged-in users
         if (user) {
             await setDoc(doc(db, 'users', user.uid), {
                 tutorialSeen: true
