@@ -101,6 +101,7 @@ export default function HabitTracker() {
     const [morningBriefing, setMorningBriefing] = useState<MorningBriefing | null>(null);
     const [loadingBriefing, setLoadingBriefing] = useState(false);
     const [showLoginModal, setShowLoginModal] = useState(false);
+    const [notification, setNotification] = useState<{ message: string; type: 'error' | 'success' | 'info' } | null>(null);
 
     const t = {
         id: {
@@ -192,6 +193,16 @@ export default function HabitTracker() {
 
     const getTodayDate = () => formatDateKey(new Date());
     const today = getTodayDate();
+
+    // Auto-dismiss notification
+    useEffect(() => {
+        if (notification) {
+            const timer = setTimeout(() => {
+                setNotification(null);
+            }, 5000);
+            return () => clearTimeout(timer);
+        }
+    }, [notification]);
 
     // 1. Initial Load (Theme & Local Fallback)
     useEffect(() => {
@@ -437,38 +448,49 @@ export default function HabitTracker() {
             if (loadingBriefing) return;
             setLoadingBriefing(true);
 
-            // 1. Calculate Yesterday's Stats
-            const yesterday = new Date();
-            yesterday.setDate(yesterday.getDate() - 1);
-            const yesterdayKey = formatDateKey(yesterday);
+            try {
+                // 1. Calculate Yesterday's Stats
+                const yesterday = new Date();
+                yesterday.setDate(yesterday.getDate() - 1);
+                const yesterdayKey = formatDateKey(yesterday);
 
-            const yesterdayHabitsList = habits.filter(h => h.createdAt === yesterdayKey);
-            const yesterdayTotal = yesterdayHabitsList.length;
-            const yesterdayCompletedIds = completions[yesterdayKey] || [];
-            const yesterdayCompletedCount = yesterdayHabitsList.filter(h => yesterdayCompletedIds.includes(h.id)).length;
-            const yesterdayRate = yesterdayTotal > 0 ? yesterdayCompletedCount / yesterdayTotal : 0;
+                const yesterdayHabitsList = habits.filter(h => h.createdAt === yesterdayKey);
+                const yesterdayTotal = yesterdayHabitsList.length;
+                const yesterdayCompletedIds = completions[yesterdayKey] || [];
+                const yesterdayCompletedCount = yesterdayHabitsList.filter(h => yesterdayCompletedIds.includes(h.id)).length;
+                const yesterdayRate = yesterdayTotal > 0 ? yesterdayCompletedCount / yesterdayTotal : 0;
 
-            const todayHabitsList = displayHabits.filter(h => h.createdAt === todayKey).map(h => h.text);
+                const todayHabitsList = displayHabits.filter(h => h.createdAt === todayKey).map(h => h.text);
 
-            const result = await generateMorningBriefing(
-                user.displayName || 'Friend',
-                yesterdayRate,
-                yesterdayTotal,
-                todayHabitsList,
-                language
-            );
+                const result = await generateMorningBriefing(
+                    user.displayName || 'Friend',
+                    yesterdayRate,
+                    yesterdayTotal,
+                    todayHabitsList,
+                    language
+                );
 
-            if (result) {
-                setMorningBriefing(result);
-                localStorage.setItem(storageKey, JSON.stringify(result));
+                if (result) {
+                    setMorningBriefing(result);
+                    localStorage.setItem(storageKey, JSON.stringify(result));
+                }
+            } catch (error: any) {
+                console.error("Morning Briefing Error:", error);
+                // Show notification for API errors
+                if (error?.message?.includes('quota') || error?.message?.includes('429')) {
+                    setNotification({ message: language === 'id' ? '⚡ Limit AI tercapai hari ini' : '⚡ AI limit reached today', type: 'error' });
+                } else if (error?.message?.includes('403') || error?.message?.includes('API key')) {
+                    setNotification({ message: language === 'id' ? '🔑 API key bermasalah' : '🔑 API key issue', type: 'error' });
+                }
+            } finally {
+                setLoadingBriefing(false);
             }
-            setLoadingBriefing(false);
         };
 
         // Delay slightly to ensure UI is settled
         const timer = setTimeout(fetchBriefing, 1000);
         return () => clearTimeout(timer);
-    }, [user, isDataLoaded, habits.length, language]);
+    }, [user, isDataLoaded, language]); // REMOVED habits.length - only trigger on user/language change
 
     // Handle Actions with Guest Check
     const requireAuth = (action: () => void) => {
@@ -592,8 +614,14 @@ export default function HabitTracker() {
 
             setHabits(updatedHabits);
             await saveToFirebase(updatedHabits, completions, notes);
-        } catch (error) {
+        } catch (error: any) {
             console.error("AI Auto-label failed:", error);
+            // Show notification for API errors
+            if (error?.message?.includes('quota') || error?.message?.includes('429')) {
+                setNotification({ message: language === 'id' ? '⚡ Limit AI tercapai. Coba lagi nanti.' : '⚡ AI limit reached. Try again later.', type: 'error' });
+            } else if (error?.message?.includes('403') || error?.message?.includes('API key')) {
+                setNotification({ message: language === 'id' ? '🔑 API key bermasalah. Hubungi admin.' : '🔑 API key issue. Contact admin.', type: 'error' });
+            }
             // Remove analyzing state if failed
             updatedHabits = updatedHabits.map(h => {
                 if (h.id === habitId) {
@@ -765,8 +793,17 @@ export default function HabitTracker() {
             if (priorityId) {
                 setPriorityTaskId(priorityId);
             }
-        } catch (err) {
-            console.error(err);
+        } catch (err: any) {
+            console.error('Eat The Frog Error:', err);
+            // Always show notification on any error
+            const errorMessage = err?.message || '';
+            if (errorMessage.includes('quota') || errorMessage.includes('429')) {
+                setNotification({ message: language === 'id' ? '⚡ Limit AI tercapai. Coba lagi dalam 1 menit.' : '⚡ AI limit reached. Try again in 1 min.', type: 'error' });
+            } else if (errorMessage.includes('403') || errorMessage.includes('API key') || errorMessage.includes('leaked')) {
+                setNotification({ message: language === 'id' ? '🔑 API key bermasalah' : '🔑 API key issue', type: 'error' });
+            } else {
+                setNotification({ message: language === 'id' ? '⚠️ Fitur AI sedang gangguan' : '⚠️ AI feature unavailable', type: 'error' });
+            }
         } finally {
             setThinkingFrog(false);
         }
@@ -1576,6 +1613,33 @@ export default function HabitTracker() {
                             </button>
                         </motion.div>
                     </div>
+                )}
+            </AnimatePresence>
+
+            {/* Toast Notification */}
+            <AnimatePresence>
+                {notification && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -50 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -50 }}
+                        className={cn(
+                            "fixed top-6 inset-x-0 mx-auto w-fit z-[200] px-6 py-4 rounded-2xl shadow-2xl backdrop-blur-xl border-2 flex items-center gap-3",
+                            notification.type === 'error' ? "bg-red-500/90 border-red-400 text-white" :
+                                notification.type === 'success' ? "bg-green-500/90 border-green-400 text-white" :
+                                    "bg-blue-500/90 border-blue-400 text-white"
+                        )}
+                    >
+                        <div className="flex items-center gap-3 font-bold text-sm">
+                            {notification.message}
+                        </div>
+                        <button
+                            onClick={() => setNotification(null)}
+                            className="ml-2 p-1 hover:bg-white/20 rounded-lg transition-colors"
+                        >
+                            <X className="w-4 h-4" />
+                        </button>
+                    </motion.div>
                 )}
             </AnimatePresence>
         </div >

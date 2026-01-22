@@ -54,7 +54,7 @@ export async function suggestTaskDetails(taskName: string): Promise<SmartTaskSug
         };
     } catch (error) {
         console.error("Gemini AI Error:", error);
-        return { emoji: '📝', category: 'Other' };
+        throw error; // Re-throw so component can show notification
     }
 }
 
@@ -110,7 +110,7 @@ export async function identifyPriorityTask(tasks: { id: string, text: string }[]
         return json.priorityTaskId || null;
     } catch (error) {
         console.error("Gemini Priority Error:", error);
-        return null;
+        throw error; // Re-throw so component can show notification
     }
 }
 
@@ -179,6 +179,6 @@ export async function generateMorningBriefing(
         };
     } catch (error) {
         console.error("Gemini Briefing Error:", error);
-        return null;
+        throw error; // Re-throw so component can show notification
     }
 }
